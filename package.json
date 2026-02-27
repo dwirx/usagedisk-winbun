@@ -14,6 +14,7 @@
     "check:fast": "bun run lint && bun run fmt:check",
     "check": "bun run typecheck && bun run lint && bun run fmt:check",
     "//3": "=== Convenience ===",
+    "start": "bun --hot src/server.ts",
     "fix": "bun run lint:fix && bun run fmt",
     "bench": "bash scripts/bench.sh",
     "prepare": "husky"
@@ -21,6 +22,8 @@
   "devDependencies": {
     "@nkzw/oxlint-config": "^1.0.1",
     "@types/bun": "latest",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@typescript/native-preview": "^7.0.0-dev.20260218.1",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
@@ -29,5 +32,9 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
   }
 }

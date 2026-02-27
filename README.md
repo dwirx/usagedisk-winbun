@@ -1,17 +1,25 @@
-# Bun Template: High-Performance Tooling
+# DiskClean
 
-Template Bun yang dioptimalkan untuk kecepatan pengembangan maksimal menggunakan ekosistem **Oxc** (`oxlint`, `oxfmt`) dan **tsgo**.
+DiskClean adalah alat pembersihan disk berbasis antarmuka web yang super cepat, dirancang khusus untuk Developer (khususnya pengguna Windows). Aplikasi ini memindai drive C: Anda dan membantu membersihkan berbagai *cache*, file sementara (temp files), dan tumpukan file developer lainnya yang menghabiskan ruang penyimpanan (seperti `node_modules`, cache Bun/NPM, Cargo registry, dll).
+
+Dibangun menggunakan teknologi terkini:
+- **[Bun](https://bun.sh)**: Runtime JavaScript all-in-one yang sangat cepat dengan API bawaan (`Bun.serve()`, `Bun.file()`, dll).
+- **React 19**: Framework frontend modern, di-serve langsung menggunakan bundler bawaan Bun tanpa memerlukan vite/webpack.
+- **Oxc (`oxlint` & `oxfmt`)**: Tooling super cepat berbasis Rust untuk proses linter dan formatting.
 
 ## 🚀 Fitur Utama
 
-- **Runtime:** [Bun](https://bun.sh) - Cepat, all-in-one JavaScript runtime & package manager.
-- **Linter Ultra Cepat:** Menggunakan `oxlint` (10-100x lebih cepat dari ESLint).
-- **Formatter Kilat:** Menggunakan `oxfmt` (Alternatif Prettier yang sangat cepat).
-- **Type-checker Instan:** Menggunakan `tsgo` untuk diagnosa TypeScript tanpa menunggu lama.
-- **Struktur Rapi:** Kode sumber berada di dalam folder `src/`.
-- **Integrasi VS Code:** Konfigurasi otomatis untuk format dan perbaikan lint saat simpan (Save).
+- **Pemindaian Super Cepat**: Memanfaatkan performa native Bun untuk membaca sistem file.
+- **Developer-Focused Cleaning**: Menargetkan direktori yang sering dipenuhi cache oleh developer seperti `npm-cache`, `.bun/install/cache`, `.cargo/registry`, dll.
+- **Indikator Keamanan**: Folder ditandai dengan jelas apakah *Safe to Delete* (Aman), *Conditional* (Bersyarat), atau *Unsafe* (Tidak Aman).
+- **Web UI Modern**: Antarmuka interaktif dan responsif langsung di browser.
+- **Zero Configuration Build**: Bun mengompilasi TypeScript dan React (JSX/TSX) secara instan.
 
-## 🛠 Cara Penggunaan
+## 🛠 Prerequisites
+
+Pastikan Anda telah menginstal **[Bun](https://bun.sh/)** di sistem operasi Anda.
+
+## 🚀 Cara Penggunaan
 
 ### 1. Instalasi Dependensi
 
@@ -23,52 +31,35 @@ bun install
 
 ### 2. Menjalankan Proyek
 
-Untuk menjalankan file utama (`src/index.ts`):
+Untuk menjalankan server pengembangan:
 
 ```bash
-bun run src/index.ts
+bun start
 ```
 
-Untuk mode pengembangan dengan _hot reload_:
+Aplikasi akan berjalan secara otomatis di `http://localhost:3000`.
 
-```bash
-bun --hot src/index.ts
-```
+### 3. Quality Control (Cek Kode)
 
-### 3. Quality Control (Pemeriksaan Kode)
+Template ini dilengkapi dengan pengecekan kode yang sangat cepat di `package.json`:
 
-Template ini memiliki sistem pemeriksaan kualitas yang sudah diatur di `package.json`:
-
-- **Cek Semua:** Jalankan pemeriksaan tipe, lint, dan format sekaligus.
+- **Jalankan Pengecekan Lengkap (Typecheck, Lint, Format):**
   ```bash
   bun run check
   ```
-
-````
-- **Perbaikan Otomatis:** Perbaiki masalah lint dan format secara otomatis.
+- **Perbaikan Otomatis (Lint & Format):**
   ```bash
   bun run fix
-````
-
-- **Cek Cepat:** Hanya lint dan format (tanpa type-check) untuk iterasi cepat.
-  ```bash
-  bun run check:fast
   ```
-
-```
 
 ## 📂 Struktur Direktori
 
-- `src/`: Folder utama untuk kode sumber TypeScript.
-- `.vscode/`: Konfigurasi editor untuk integrasi tooling otomatis.
-- `.oxlintrc.json`: Pengaturan aturan linter.
-- `.oxfmtrc.jsonc`: Pengaturan pemformatan kode.
-- `SKILL.md`: Panduan teknis penggunaan stack tooling ini.
-- `AGENTS.md`: Instruksi khusus untuk asisten AI (LLM).
+- `src/server.ts`: Backend server dan API menggunakan `Bun.serve()`.
+- `src/frontend.tsx`: File frontend React utama.
+- `src/scanner.ts`: Logika core untuk pemindaian sistem file dan perhitungan ukuran direktori.
+- `src/index.html` & `src/index.css`: Template dasar HTML dan Stylesheet.
+- `package.json`: Definisi dependensi dan scripts (Oxc & React).
 
-## 📝 Konvensi Pengembangan
+## 📝 Lisensi
 
-1. **Gunakan Primitif Bun:** Lebih disukai menggunakan API bawaan Bun (`Bun.file`, `Bun.serve`) daripada modul Node.js.
-2. **Type Safety:** Hindari penggunaan `any`. Linter akan memberikan peringatan jika ditemukan.
-3. **Format Otomatis:** Pastikan editor Anda menggunakan pengaturan yang ada di `.vscode/settings.json` agar kode selalu rapi secara konsisten.
-```
+MIT
