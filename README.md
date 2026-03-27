@@ -1,8 +1,9 @@
 # DiskClean
 
-DiskClean adalah alat pembersihan disk berbasis antarmuka web yang super cepat, dirancang khusus untuk Developer (khususnya pengguna Windows). Aplikasi ini memindai drive C: Anda dan membantu membersihkan berbagai *cache*, file sementara (temp files), dan tumpukan file developer lainnya yang menghabiskan ruang penyimpanan (seperti `node_modules`, cache Bun/NPM, Cargo registry, dll).
+DiskClean adalah alat pembersihan disk berbasis antarmuka web yang super cepat, dirancang khusus untuk Developer (khususnya pengguna Windows). Aplikasi ini memindai drive C: Anda dan membantu membersihkan berbagai _cache_, file sementara (temp files), dan tumpukan file developer lainnya yang menghabiskan ruang penyimpanan (seperti `node_modules`, cache Bun/NPM, Cargo registry, dll).
 
 Dibangun menggunakan teknologi terkini:
+
 - **[Bun](https://bun.sh)**: Runtime JavaScript all-in-one yang sangat cepat dengan API bawaan (`Bun.serve()`, `Bun.file()`, dll).
 - **React 19**: Framework frontend modern, di-serve langsung menggunakan bundler bawaan Bun tanpa memerlukan vite/webpack.
 - **Oxc (`oxlint` & `oxfmt`)**: Tooling super cepat berbasis Rust untuk proses linter dan formatting.
@@ -11,8 +12,14 @@ Dibangun menggunakan teknologi terkini:
 
 - **Pemindaian Super Cepat**: Memanfaatkan performa native Bun untuk membaca sistem file.
 - **Developer-Focused Cleaning**: Menargetkan direktori yang sering dipenuhi cache oleh developer seperti `npm-cache`, `.bun/install/cache`, `.cargo/registry`, dll.
-- **Indikator Keamanan**: Folder ditandai dengan jelas apakah *Safe to Delete* (Aman), *Conditional* (Bersyarat), atau *Unsafe* (Tidak Aman).
+- **Target Lebih Lengkap**: Ditambah target populer lain seperti cache Playwright, NuGet (`.nuget/packages`), Brave cache, Delivery Optimization, hingga NVIDIA shader cache.
+- **Target Lebih Luas Lagi**: Sekarang mencakup cache tambahan seperti DirectX shader cache, Windows thumbnail/icon cache, CrashDumps, Teams/Slack/Discord cache, Go build cache, Dart Pub cache, NuGet HTTP cache, dan lain-lain.
+- **Indikator Keamanan**: Folder ditandai dengan jelas apakah _Safe to Delete_ (Aman), _Conditional_ (Bersyarat), atau _Unsafe_ (Tidak Aman).
 - **Web UI Modern**: Antarmuka interaktif dan responsif langsung di browser.
+- **Diagnostik Lebih Detail**: Hasil scan menampilkan jumlah target diperiksa, target tidak ditemukan, akses terbatas, dan item yang terlewati karena izin.
+- **Progress Cleaning Streaming**: Proses pembersihan tampil realtime per target, termasuk hasil file terhapus dan ruang yang berhasil dibebaskan.
+- **Buka Folder Langsung**: Tiap item bisa dibuka langsung di File Explorer dari UI.
+- **Filter Analisis Detail**: Tersedia pencarian, filter status keamanan, filter ukuran minimum, dan panel prioritas aman terbesar.
 - **Zero Configuration Build**: Bun mengompilasi TypeScript dan React (JSX/TSX) secara instan.
 
 ## 🛠 Prerequisites

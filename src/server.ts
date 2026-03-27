@@ -1,7 +1,50 @@
+import { getErrorMessage, hasErrorCode } from "./error";
 import indexHtml from "./index.html";
-import { TARGETS, scanSingleTarget, getDiskInfo, cleanTargetStream } from "./scanner.ts";
+import {
+  cleanTargetStream,
+  getDiskInfo,
+  getTargetById,
+  openTargetFolder,
+  scanSingleTarget,
+  TARGETS,
+} from "./scanner.ts";
+import type { CleanResult } from "./types";
 
-function startServer(port: number) {
+interface CleanRequestBody {
+  ids: string[];
+}
+
+const JSON_HEADERS = {
+  "Content-Type": "application/json; charset=utf-8",
+} as const;
+
+function writeStdout(message: string): void {
+  process.stdout.write(`${message}\n`);
+}
+
+function writeStderr(message: string): void {
+  process.stderr.write(`${message}\n`);
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: JSON_HEADERS,
+  });
+}
+
+function isCleanRequestBody(value: unknown): value is CleanRequestBody {
+  if (typeof value !== "object" || value === null || !("ids" in value)) {
+    return false;
+  }
+  const ids = (value as { ids?: unknown }).ids;
+  return (
+    Array.isArray(ids) &&
+    ids.every((item) => typeof item === "string" && item.length > 0)
+  );
+}
+
+function startServer(port: number): void {
   try {
     const server = Bun.serve({
       port,
@@ -9,97 +52,159 @@ function startServer(port: number) {
       routes: {
         "/": indexHtml,
         "/api/targets": {
-          GET: () => new Response(JSON.stringify(TARGETS), {
-            headers: { "Content-Type": "application/json" }
-          })
+          GET: () => jsonResponse(TARGETS),
         },
         "/api/diskinfo": {
           GET: async () => {
             const info = await getDiskInfo();
-            return new Response(JSON.stringify(info), {
-              headers: { "Content-Type": "application/json" }
-            });
-          }
+            return jsonResponse(info);
+          },
         },
         "/api/scan/:id": {
           GET: async (req) => {
             try {
               const id = new URL(req.url).pathname.split("/").pop();
-              if (!id) return new Response("Bad Request", { status: 400 });
+              if (!id) {
+                return jsonResponse({ error: "id tidak valid" }, 400);
+              }
               const result = await scanSingleTarget(id);
-              return new Response(JSON.stringify(result), {
-                headers: { "Content-Type": "application/json" }
-              });
-            } catch {
-              return new Response(JSON.stringify({ error: "Gagal memindai" }), { status: 500 });
+              if (!result) {
+                return jsonResponse({ error: "target tidak ditemukan" }, 404);
+              }
+              return jsonResponse(result);
+            } catch (error) {
+              return jsonResponse(
+                { error: getErrorMessage(error, "Gagal memindai target") },
+                500,
+              );
             }
-          }
+          },
         },
+        "/api/open/:id": {
+          POST: async (req) => {
+            try {
+              const id = new URL(req.url).pathname.split("/").pop();
+              if (!id) {
+                return jsonResponse({ error: "id tidak valid" }, 400);
+              }
 
-        // SSE endpoint — streaming progress per folder
+              const result = await openTargetFolder(id);
+              if (!result) {
+                return jsonResponse({ error: "target tidak ditemukan" }, 404);
+              }
+
+              if (!result.opened) {
+                return jsonResponse(result, 409);
+              }
+              return jsonResponse(result);
+            } catch (error) {
+              return jsonResponse(
+                { error: getErrorMessage(error, "Gagal membuka folder") },
+                500,
+              );
+            }
+          },
+        },
         "/api/clean/stream": {
           POST: async (req) => {
             try {
-              const body = await req.json() as { ids: string[] };
-              if (!Array.isArray(body.ids) || body.ids.length === 0)
-                return new Response("ids required", { status: 400 });
+              const body = (await req.json()) as unknown;
+              if (!isCleanRequestBody(body) || body.ids.length === 0) {
+                return jsonResponse(
+                  { error: "ids harus berupa array string non-kosong" },
+                  400,
+                );
+              }
 
               const ids = body.ids;
               let closed = false;
-
               const stream = new ReadableStream({
                 async start(controller) {
-                  const enc = new TextEncoder();
-
-                  const send = (obj: object) => {
-                    if (closed) return;
-                    try { controller.enqueue(enc.encode("data: " + JSON.stringify(obj) + "\n\n")); }
-                    catch { closed = true; }
+                  const encoder = new TextEncoder();
+                  const send = (payload: object) => {
+                    if (closed) {
+                      return;
+                    }
+                    try {
+                      controller.enqueue(
+                        encoder.encode(`data: ${JSON.stringify(payload)}\n\n`),
+                      );
+                    } catch {
+                      closed = true;
+                    }
                   };
 
-                  // Kirim total dulu
                   send({ type: "start", total: ids.length });
 
-                  // Proses sekuensial agar progress bermakna (satu per satu)
-                  for (let i = 0; i < ids.length; i++) {
-                    if (closed) break;
-                    send({ type: "progress", index: i, id: ids[i] });
-                    await cleanTargetStream(ids[i]!, result => send({ type: "result", index: i, result }));
+                  for (let index = 0; index < ids.length; index++) {
+                    if (closed) {
+                      break;
+                    }
+
+                    const id = ids[index];
+                    if (!id) {
+                      continue;
+                    }
+                    const target = getTargetById(id);
+                    send({
+                      type: "progress",
+                      current: index + 1,
+                      id,
+                      name: target?.name ?? id,
+                    });
+
+                    await cleanTargetStream(id, (result: CleanResult) => {
+                      send({
+                        type: "result",
+                        current: index + 1,
+                        id,
+                        result,
+                      });
+                    });
                   }
 
                   send({ type: "done" });
-                  try { controller.close(); } catch { /* ignore */ }
+                  if (!closed) {
+                    controller.close();
+                  }
                 },
-                cancel() { closed = true; }
+                cancel() {
+                  closed = true;
+                },
               });
 
               return new Response(stream, {
                 headers: {
-                  "Content-Type": "text/event-stream",
                   "Cache-Control": "no-cache",
-                  "Connection": "keep-alive",
+                  Connection: "keep-alive",
+                  "Content-Type": "text/event-stream",
                   "X-Accel-Buffering": "no",
-                }
+                },
               });
-            } catch (e: any) {
-              return new Response(e?.message ?? "Error", { status: 500 });
+            } catch (error) {
+              return jsonResponse(
+                { error: getErrorMessage(error, "Terjadi kesalahan stream") },
+                500,
+              );
             }
-          }
-        }
+          },
+        },
       },
-      development: { hmr: false, console: true }
+      development: { hmr: false, console: true },
     });
 
-    console.log(`\n${"=".repeat(54)}`);
-    console.log(`🚀 Buka browser: http://localhost:${server.port}`);
-    console.log(`${"=".repeat(54)}\n`);
-  } catch (error: any) {
-    if (error?.code === "EADDRINUSE") {
-      console.log(`⚠️  Port ${port} dipakai. Mencoba port ${port + 1}...`);
+    writeStdout("");
+    writeStdout("=".repeat(54));
+    writeStdout(`Buka browser: http://localhost:${server.port}`);
+    writeStdout("=".repeat(54));
+    writeStdout("");
+  } catch (error) {
+    if (hasErrorCode(error, "EADDRINUSE")) {
+      writeStdout(`Port ${port} dipakai. Mencoba port ${port + 1}...`);
       startServer(port + 1);
-    } else {
-      console.error(error);
+      return;
     }
+    writeStderr(getErrorMessage(error, "Server gagal dijalankan"));
   }
 }
 
