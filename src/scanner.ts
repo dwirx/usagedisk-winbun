@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { getErrorMessage, hasErrorCode } from "./error";
+import { buildScanAssessment, canAutoClean } from "./scan-analysis";
 import type {
+  AvailabilityStatus,
   CleanResult,
   DiskInfo,
   OpenFolderResult,
@@ -841,27 +843,146 @@ async function deleteDirContents(dirPath: string): Promise<DeleteResult> {
 }
 
 function buildMissingScan(target: Target): ScannedTarget {
-  return {
-    ...target,
-    size: 0,
+  return buildScannedTarget(target, {
+    availabilityStatus: "missing",
     files: 0,
-    skippedItems: 0,
-    scanStatus: "missing",
     scanNote: "Folder tidak ditemukan di mesin ini.",
-  };
+    size: 0,
+    skippedItems: 0,
+  });
 }
 
 function buildInaccessibleScan(
   target: Target,
   errorMessage: string,
 ): ScannedTarget {
+  return buildScannedTarget(target, {
+    availabilityStatus: "inaccessible",
+    files: 0,
+    scanNote: `Folder ada, tetapi tidak dapat diakses: ${errorMessage}`,
+    size: 0,
+    skippedItems: 0,
+  });
+}
+
+function buildScannedTarget(
+  target: Target,
+  input: {
+    availabilityStatus: AvailabilityStatus;
+    files: number;
+    scanNote?: string;
+    size: number;
+    skippedItems: number;
+  },
+): ScannedTarget {
+  const assessment = buildScanAssessment({
+    availabilityStatus: input.availabilityStatus,
+    files: input.files,
+    safeToDelete: target.safeToDelete,
+    size: input.size,
+    skippedItems: input.skippedItems,
+  });
+
   return {
     ...target,
-    size: 0,
-    files: 0,
-    skippedItems: 0,
-    scanStatus: "inaccessible",
-    scanNote: `Folder ada, tetapi tidak dapat diakses: ${errorMessage}`,
+    size: input.size,
+    files: input.files,
+    skippedItems: input.skippedItems,
+    availabilityStatus: input.availabilityStatus,
+    scanNote: input.scanNote,
+    recommendation: assessment.recommendation,
+    riskLevel: assessment.riskLevel,
+    reason: assessment.reason,
+    evidence: assessment.evidence,
+  };
+}
+
+async function scanTarget(target: Target): Promise<ScannedTarget> {
+  let targetStat: Awaited<ReturnType<typeof stat>>;
+  try {
+    targetStat = await stat(target.path);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) {
+      return buildMissingScan(target);
+    }
+    return buildInaccessibleScan(
+      target,
+      getErrorMessage(error, "izin ditolak"),
+    );
+  }
+
+  if (!targetStat.isDirectory()) {
+    return buildInaccessibleScan(target, "path bukan folder");
+  }
+
+  const sizeResult = await getDirSizeAndCount(target.path);
+  const scanNote =
+    sizeResult.skippedItems > 0
+      ? `${sizeResult.skippedItems.toLocaleString("id-ID")} item tidak bisa diakses saat pemindaian.`
+      : undefined;
+
+  return buildScannedTarget(target, {
+    availabilityStatus: "available",
+    files: sizeResult.files,
+    scanNote,
+    size: sizeResult.size,
+    skippedItems: sizeResult.skippedItems,
+  });
+}
+
+function buildBlockedCleanResult(
+  target: Pick<Target, "id" | "name">,
+  message: string,
+  estimatedBytes = 0,
+  remainingBytes = 0,
+): CleanResult {
+  return {
+    id: target.id,
+    name: target.name,
+    success: false,
+    freedBytes: 0,
+    deletedFiles: 0,
+    errors: [message],
+    estimatedBytes,
+    remainingBytes,
+    verificationStatus: "blocked",
+    verificationNote: message,
+  };
+}
+
+async function cleanVerifiedTarget(target: Target): Promise<CleanResult> {
+  const beforeScan = await scanTarget(target);
+  if (!canAutoClean(beforeScan.recommendation)) {
+    return buildBlockedCleanResult(
+      target,
+      beforeScan.reason,
+      beforeScan.size,
+      beforeScan.size,
+    );
+  }
+
+  const { deleted, freed, errors } = await deleteDirContents(target.path);
+  const afterScan = await scanTarget(target);
+  const verificationStatus =
+    afterScan.availabilityStatus === "available" && afterScan.size === 0
+      ? "verified"
+      : "partial";
+  const verificationNote =
+    verificationStatus === "verified"
+      ? "Preflight dan verifikasi pasca-clean lolos."
+      : "Sebagian data masih tersisa atau tidak bisa diverifikasi penuh setelah clean.";
+
+  return {
+    id: target.id,
+    name: target.name,
+    success: verificationStatus === "verified",
+    freedBytes: freed,
+    deletedFiles: deleted,
+    errors,
+    estimatedBytes: beforeScan.size,
+    remainingBytes: afterScan.size,
+    verificationStatus,
+    verificationNote,
   };
 }
 
@@ -894,37 +1015,7 @@ export async function scanSingleTarget(
     return null;
   }
 
-  let targetStat: Awaited<ReturnType<typeof stat>>;
-  try {
-    targetStat = await stat(target.path);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
-      return buildMissingScan(target);
-    }
-    return buildInaccessibleScan(
-      target,
-      getErrorMessage(error, "izin ditolak"),
-    );
-  }
-
-  if (!targetStat.isDirectory()) {
-    return buildInaccessibleScan(target, "path bukan folder");
-  }
-
-  const sizeResult = await getDirSizeAndCount(target.path);
-  const scanNote =
-    sizeResult.skippedItems > 0
-      ? `${sizeResult.skippedItems.toLocaleString("id-ID")} item tidak bisa diakses saat pemindaian.`
-      : undefined;
-
-  return {
-    ...target,
-    size: sizeResult.size,
-    files: sizeResult.files,
-    skippedItems: sizeResult.skippedItems,
-    scanStatus: "ok",
-    scanNote,
-  };
+  return scanTarget(target);
 }
 
 export async function cleanTargetStream(
@@ -933,77 +1024,13 @@ export async function cleanTargetStream(
 ): Promise<void> {
   const target = getTargetById(id);
   if (!target) {
-    onProgress({
-      id,
-      name: id,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: ["Target tidak ditemukan"],
-    });
+    onProgress(
+      buildBlockedCleanResult({ id, name: id }, "Target tidak ditemukan"),
+    );
     return;
   }
 
-  if (target.safeToDelete !== "safe") {
-    onProgress({
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: ["Bukan kategori aman, dilewati."],
-    });
-    return;
-  }
-
-  let targetStat: Awaited<ReturnType<typeof stat>>;
-  try {
-    targetStat = await stat(target.path);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
-      onProgress({
-        id: target.id,
-        name: target.name,
-        success: true,
-        freedBytes: 0,
-        deletedFiles: 0,
-        errors: ["Folder tidak ada (sudah bersih)."],
-      });
-      return;
-    }
-
-    onProgress({
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: [getErrorMessage(error, "Tidak bisa mengakses folder")],
-    });
-    return;
-  }
-
-  if (!targetStat.isDirectory()) {
-    onProgress({
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: ["Path target bukan folder."],
-    });
-    return;
-  }
-
-  const { deleted, freed, errors } = await deleteDirContents(target.path);
-  onProgress({
-    id: target.id,
-    name: target.name,
-    success: true,
-    freedBytes: freed,
-    deletedFiles: deleted,
-    errors,
-  });
+  onProgress(await cleanVerifiedTarget(target));
 }
 
 export async function cleanTarget(id: string): Promise<CleanResult | null> {
@@ -1012,63 +1039,7 @@ export async function cleanTarget(id: string): Promise<CleanResult | null> {
     return null;
   }
 
-  if (target.safeToDelete !== "safe") {
-    return {
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: [
-        "Folder ini tidak diizinkan untuk dibersihkan otomatis (bukan safe).",
-      ],
-    };
-  }
-
-  let targetStat: Awaited<ReturnType<typeof stat>>;
-  try {
-    targetStat = await stat(target.path);
-  } catch (error) {
-    if (hasErrorCode(error, "ENOENT")) {
-      return {
-        id: target.id,
-        name: target.name,
-        success: true,
-        freedBytes: 0,
-        deletedFiles: 0,
-        errors: ["Folder tidak ditemukan (mungkin sudah bersih)."],
-      };
-    }
-    return {
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: [getErrorMessage(error, "Tidak bisa mengakses folder")],
-    };
-  }
-
-  if (!targetStat.isDirectory()) {
-    return {
-      id: target.id,
-      name: target.name,
-      success: false,
-      freedBytes: 0,
-      deletedFiles: 0,
-      errors: ["Path target bukan folder."],
-    };
-  }
-
-  const { deleted, freed, errors } = await deleteDirContents(target.path);
-  return {
-    id: target.id,
-    name: target.name,
-    success: true,
-    freedBytes: freed,
-    deletedFiles: deleted,
-    errors,
-  };
+  return cleanVerifiedTarget(target);
 }
 
 export async function openTargetFolder(

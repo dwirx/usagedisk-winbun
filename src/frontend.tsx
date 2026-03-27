@@ -7,6 +7,8 @@ import type {
   CleanResult,
   DiskInfo,
   OpenFolderResult,
+  Recommendation,
+  RiskLevel,
   SafeLevel,
   ScannedTarget,
   Target,
@@ -51,6 +53,34 @@ const SAFE_MAP: Record<SafeLevel, { label: string; cls: string }> = {
   unsafe: { label: "🚫 Jangan Hapus", cls: "badge-danger" },
 };
 
+const RECOMMENDATION_MAP: Record<
+  Recommendation,
+  { label: string; cls: string }
+> = {
+  clean_now: {
+    label: "🧹 Siap Dibersihkan",
+    cls: "badge-rec-clean",
+  },
+  review_first: {
+    label: "🔎 Review Dulu",
+    cls: "badge-rec-review",
+  },
+  manual_only: {
+    label: "✋ Manual Saja",
+    cls: "badge-rec-manual",
+  },
+  unavailable: {
+    label: "⛔ Belum Bisa Dicek",
+    cls: "badge-rec-unavailable",
+  },
+};
+
+const RISK_MAP: Record<RiskLevel, { label: string; cls: string }> = {
+  low: { label: "Risiko Rendah", cls: "risk-low" },
+  medium: { label: "Risiko Sedang", cls: "risk-medium" },
+  high: { label: "Risiko Tinggi", cls: "risk-high" },
+};
+
 const CATEGORY_ORDER = [
   "System Cache",
   "User Files",
@@ -66,6 +96,13 @@ const SAFE_ORDER: Record<SafeLevel, number> = {
   safe: 0,
   conditional: 1,
   unsafe: 2,
+};
+
+const RECOMMENDATION_ORDER: Record<Recommendation, number> = {
+  clean_now: 0,
+  review_first: 1,
+  manual_only: 2,
+  unavailable: 3,
 };
 
 interface ScanSummary {
@@ -113,7 +150,7 @@ interface RowProps {
   onOpenFolder: () => void;
 }
 
-type SortBy = "name" | "safe" | "size";
+type SortBy = "name" | "recommendation" | "size";
 type SafetyFilter = "all" | SafeLevel;
 type MinSizeFilter = 0 | 100 | 500 | 1024;
 
@@ -340,23 +377,41 @@ function CleanProgress({
 
         <div className="modal-list clean-result-list">
           {results.length === 0 && !done && (
-            <div className="clean-waiting">⏳ Mempersiapkan...</div>
+            <div className="clean-waiting">⏳ Mempersiapkan verifikasi...</div>
           )}
           {results.map((result) => (
             <div
               key={result.id}
-              className={`modal-item ${result.success ? "modal-item-ok" : "modal-item-fail"}`}
+              className={`modal-item ${
+                result.verificationStatus === "verified"
+                  ? "modal-item-ok"
+                  : result.verificationStatus === "partial"
+                    ? "modal-item-warn"
+                    : "modal-item-fail"
+              }`}
             >
               <span className="modal-item-icon">
-                {result.success ? "✅" : "❌"}
+                {result.verificationStatus === "verified"
+                  ? "✅"
+                  : result.verificationStatus === "partial"
+                    ? "⚠️"
+                    : "⛔"}
               </span>
               <div className="modal-item-info">
                 <span className="modal-item-name">{result.name}</span>
                 <span className="modal-item-size">
-                  {result.success
-                    ? `-${formatBytes(result.freedBytes)} · ${formatNumber(result.deletedFiles)} file dihapus`
-                    : (result.errors[0] ?? "gagal")}
+                  {`${formatBytes(result.estimatedBytes)} → ${formatBytes(
+                    result.remainingBytes,
+                  )} · -${formatBytes(result.freedBytes)}`}
                 </span>
+                <span className="modal-item-note">
+                  {result.verificationNote}
+                </span>
+                {result.errors.length > 0 && (
+                  <span className="modal-item-note modal-item-note-warn">
+                    {result.errors[0]}
+                  </span>
+                )}
               </div>
             </div>
           ))}
@@ -390,11 +445,11 @@ const ConfirmModal = memo(function ConfirmModal({
   return (
     <div className="modal-overlay" onClick={onCancel}>
       <div className="modal-box" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-icon">🧹</div>
-        <h2 className="modal-title">Konfirmasi Pembersihan</h2>
+        <div className="modal-icon">🧾</div>
+        <h2 className="modal-title">Review Sebelum Membersihkan</h2>
         <p className="modal-subtitle">
-          Anda akan membersihkan <strong>{items.length} folder</strong> dan
-          membebaskan sekitar{" "}
+          Anda akan membersihkan <strong>{items.length} folder</strong> yang
+          sudah lolos preflight scan, dengan estimasi ruang kosong{" "}
           <strong className="modal-size">{formatBytes(totalSize)}</strong>.
         </p>
 
@@ -405,7 +460,13 @@ const ConfirmModal = memo(function ConfirmModal({
               <div className="modal-item-info">
                 <span className="modal-item-name">{item.name}</span>
                 <span className="modal-item-size">
-                  {formatBytes(item.size)}
+                  {formatBytes(item.size)} · {item.reason}
+                </span>
+                <span className="modal-item-note">
+                  Evidence: {formatNumber(item.files)} file ·{" "}
+                  {item.evidence.skippedItems === 0
+                    ? "tanpa item tertahan"
+                    : `${formatNumber(item.evidence.skippedItems)} item tertahan`}
                 </span>
               </div>
             </div>
@@ -414,8 +475,9 @@ const ConfirmModal = memo(function ConfirmModal({
 
         <div className="modal-warn">
           ⚠️ File yang sudah dibersihkan{" "}
-          <strong>tidak bisa dikembalikan</strong>. Semua item berlabel{" "}
-          <strong>Aman Dihapus</strong> telah diverifikasi aman.
+          <strong>tidak bisa dikembalikan</strong>. Backend akan mengecek ulang
+          setiap target tepat sebelum penghapusan, lalu memblok item yang
+          kondisinya berubah.
         </div>
 
         <div className="modal-actions">
@@ -452,11 +514,11 @@ const CleanBar = memo(function CleanBar({
           <span className="clean-bar-count">
             {selected.length > 0
               ? `${selected.length} folder dipilih · ${formatBytes(totalSize)}`
-              : `${allSafeCount} folder aman tersedia untuk dibersihkan`}
+              : `${allSafeCount} folder lolos preflight dan siap dibersihkan`}
           </span>
           <div className="clean-bar-btns">
             <button className="cb-btn" onClick={onSelectAll}>
-              ✅ Pilih Semua Aman
+              ✅ Pilih Semua Rekomendasi
             </button>
             {selected.length > 0 && (
               <button className="cb-btn cb-btn-ghost" onClick={onDeselectAll}>
@@ -470,7 +532,7 @@ const CleanBar = memo(function CleanBar({
           disabled={selected.length === 0}
           onClick={onClean}
         >
-          🧹 Bersihkan{selected.length > 0 ? ` (${selected.length})` : ""}
+          🧹 Review &amp; Clean
         </button>
       </div>
     </div>
@@ -486,7 +548,7 @@ const ResultRow = memo(function ResultRow({
   onCheck,
   onOpenFolder,
 }: RowProps) {
-  const canSelect = item.safeToDelete === "safe";
+  const canSelect = item.recommendation === "clean_now";
   const isBig = item.size > 500 * 1024 * 1024;
   const isMed = item.size > 100 * 1024 * 1024;
   const rowClass = `row ${isBig ? "row-danger" : isMed ? "row-warn" : "row-ok"} ${
@@ -502,7 +564,7 @@ const ResultRow = memo(function ResultRow({
           title={
             canSelect
               ? "Pilih untuk dibersihkan"
-              : "Hanya label 'Aman Dihapus' yang bisa dipilih"
+              : "Hanya item berlabel 'Siap Dibersihkan' yang bisa dipilih"
           }
         >
           <div className={`checkbox ${isSelected ? "checkbox-checked" : ""}`}>
@@ -519,8 +581,16 @@ const ResultRow = memo(function ResultRow({
         </div>
 
         <div className="row-right" onClick={onToggle}>
+          <span
+            className={`badge ${RECOMMENDATION_MAP[item.recommendation].cls}`}
+          >
+            {RECOMMENDATION_MAP[item.recommendation].label}
+          </span>
           <span className={`badge ${SAFE_MAP[item.safeToDelete].cls}`}>
             {SAFE_MAP[item.safeToDelete].label}
+          </span>
+          <span className={`risk-pill ${RISK_MAP[item.riskLevel].cls}`}>
+            {RISK_MAP[item.riskLevel].label}
           </span>
           <div className="row-size-col">
             <span className="row-size">{formatBytes(item.size)}</span>
@@ -560,14 +630,59 @@ const ResultRow = memo(function ResultRow({
               <p className="detail-txt">{item.description}</p>
             </div>
             <div className="detail-block">
-              <div className="detail-lbl">
-                {item.safeToDelete === "safe"
-                  ? "✅ Status: Aman Dihapus"
-                  : item.safeToDelete === "conditional"
-                    ? "⚠️ Status: Perlu Hati-hati"
-                    : "🚫 Status: Jangan Hapus Sembarangan"}
+              <div className="detail-lbl">🧭 Keputusan Cleaner</div>
+              <p className="detail-txt">{item.reason}</p>
+              <div className="detail-actions">
+                <span
+                  className={`badge ${RECOMMENDATION_MAP[item.recommendation].cls}`}
+                >
+                  {RECOMMENDATION_MAP[item.recommendation].label}
+                </span>
+                <span className={`risk-pill ${RISK_MAP[item.riskLevel].cls}`}>
+                  {RISK_MAP[item.riskLevel].label}
+                </span>
               </div>
+            </div>
+            <div className="detail-block">
+              <div className="detail-lbl">🛡️ Catatan Keamanan</div>
               <p className="detail-txt">{item.safeNote}</p>
+            </div>
+            <div className="detail-block">
+              <div className="detail-lbl">🔬 Preflight Evidence</div>
+              <div className="evidence-grid">
+                <div className="evidence-item">
+                  <span>Path</span>
+                  <strong>
+                    {item.evidence.pathExists ? "Ditemukan" : "Tidak Ada"}
+                  </strong>
+                </div>
+                <div className="evidence-item">
+                  <span>Akses</span>
+                  <strong>
+                    {item.evidence.readable ? "Bisa Dibaca" : "Tertahan"}
+                  </strong>
+                </div>
+                <div className="evidence-item">
+                  <span>Tipe</span>
+                  <strong>
+                    {item.evidence.isDirectory ? "Direktori" : "Tidak Valid"}
+                  </strong>
+                </div>
+                <div className="evidence-item">
+                  <span>Preflight</span>
+                  <strong>
+                    {item.evidence.preflightPassed ? "Lolos" : "Tertahan"}
+                  </strong>
+                </div>
+                <div className="evidence-item">
+                  <span>Estimasi</span>
+                  <strong>{formatBytes(item.evidence.estimatedBytes)}</strong>
+                </div>
+                <div className="evidence-item">
+                  <span>Skip</span>
+                  <strong>{formatNumber(item.evidence.skippedItems)}</strong>
+                </div>
+              </div>
             </div>
             {item.scanNote && (
               <div className="detail-block">
@@ -588,8 +703,8 @@ const ResultRow = memo(function ResultRow({
                     onClick={onCheck}
                   >
                     {isSelected
-                      ? "✓ Dipilih untuk Dibersihkan"
-                      : "+ Pilih untuk Dibersihkan"}
+                      ? "✓ Masuk Batch Clean"
+                      : "+ Tambahkan ke Batch Clean"}
                   </button>
                 )}
               </div>
@@ -754,14 +869,14 @@ export default function App() {
         const scanned = await fetchJson<ScannedTarget>(
           `/api/scan/${encodeURIComponent(target.id)}`,
         );
-        if (scanned.scanStatus === "missing") {
+        if (scanned.availabilityStatus === "missing") {
           nextSummary.missing++;
-        } else if (scanned.scanStatus === "inaccessible") {
+        } else if (scanned.availabilityStatus === "inaccessible") {
           nextSummary.inaccessible++;
         }
 
         nextSummary.skippedItems += scanned.skippedItems;
-        if (scanned.size > 0 || scanned.scanStatus === "inaccessible") {
+        if (scanned.size > 0 || scanned.availabilityStatus === "inaccessible") {
           discovered.push(scanned);
         }
         if (scanned.size > 0) {
@@ -893,13 +1008,31 @@ export default function App() {
       : 0;
   const totalBloat = results.reduce((sum, row) => sum + row.size, 0);
   const totalFiles = results.reduce((sum, row) => sum + row.files, 0);
-  const safeItems = results.filter((row) => row.safeToDelete === "safe");
+  const safeItems = results.filter((row) => row.recommendation === "clean_now");
+  const reviewItems = results.filter(
+    (row) => row.recommendation === "review_first",
+  );
+  const manualItems = results.filter(
+    (row) => row.recommendation === "manual_only",
+  );
+  const unavailableItems = results.filter(
+    (row) => row.recommendation === "unavailable",
+  );
   const safeToFree = safeItems.reduce((sum, row) => sum + row.size, 0);
+  const reviewToFree = reviewItems.reduce((sum, row) => sum + row.size, 0);
   const minBytes = minSizeFilter === 0 ? 0 : minSizeFilter * 1024 * 1024;
   const topSafeCandidates = safeItems
     .slice()
     .sort((left, right) => right.size - left.size)
     .slice(0, 5);
+  const topReviewCandidates = reviewItems
+    .slice()
+    .sort((left, right) => right.size - left.size)
+    .slice(0, 4);
+  const topManualCandidates = manualItems
+    .slice()
+    .sort((left, right) => right.size - left.size)
+    .slice(0, 3);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const filtered = results
@@ -913,40 +1046,49 @@ export default function App() {
       return (
         row.name.toLowerCase().includes(normalizedQuery) ||
         row.path.toLowerCase().includes(normalizedQuery) ||
-        row.type.toLowerCase().includes(normalizedQuery)
+        row.type.toLowerCase().includes(normalizedQuery) ||
+        row.reason.toLowerCase().includes(normalizedQuery)
       );
     })
     .sort((left, right) => {
       if (sortBy === "name") {
         return left.name.localeCompare(right.name);
       }
-      if (sortBy === "safe") {
-        return SAFE_ORDER[left.safeToDelete] - SAFE_ORDER[right.safeToDelete];
+      if (sortBy === "recommendation") {
+        return (
+          RECOMMENDATION_ORDER[left.recommendation] -
+            RECOMMENDATION_ORDER[right.recommendation] ||
+          SAFE_ORDER[left.safeToDelete] - SAFE_ORDER[right.safeToDelete]
+        );
       }
       return right.size - left.size;
     });
 
-  const toggleSelect = useCallback((id: string, safeToDelete: SafeLevel) => {
-    if (safeToDelete !== "safe") {
-      return;
-    }
-    setSelected((previous) => {
-      const next = new Set(previous);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
+  const toggleSelect = useCallback(
+    (id: string, recommendation: Recommendation) => {
+      if (recommendation !== "clean_now") {
+        return;
       }
-      return next;
-    });
-  }, []);
+      setSelected((previous) => {
+        const next = new Set(previous);
+        if (next.has(id)) {
+          next.delete(id);
+        } else {
+          next.add(id);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   const selectOneSafe = useCallback(
     (id: string) => {
       const target = results.find((item) => item.id === id);
-      if (!target || target.safeToDelete !== "safe") {
+      if (!target || target.recommendation !== "clean_now") {
         return;
       }
+      setExpanded(id);
       setSelected((previous) => {
         if (previous.has(id)) {
           return previous;
@@ -967,7 +1109,7 @@ export default function App() {
     setSelected(new Set());
   }, []);
 
-  const selectedItems = results.filter((item) => selected.has(item.id));
+  const selectedItems = safeItems.filter((item) => selected.has(item.id));
   const selectedSize = selectedItems.reduce((sum, item) => sum + item.size, 0);
 
   const diag = (() => {
@@ -977,26 +1119,26 @@ export default function App() {
     if (totalBloat === 0) {
       return {
         level: "green",
-        msg: "Drive C Anda bersih. Tidak ada sampah terdeteksi.",
+        msg: "Drive C Anda bersih. Tidak ada junk signifikan terdeteksi.",
       };
     }
 
     const gb = totalBloat / 1024 ** 3;
-    if (gb > 10) {
+    if (gb > 10 || safeToFree > 5 * 1024 ** 3) {
       return {
         level: "red",
-        msg: `Kritis. ${formatBytes(totalBloat)} sampah ditemukan. Segera bersihkan.`,
+        msg: `Kritis. ${formatBytes(totalBloat)} junk ditemukan dan ${formatBytes(safeToFree)} siap dibersihkan sekarang.`,
       };
     }
-    if (gb > 2) {
+    if (gb > 2 || reviewItems.length > 0) {
       return {
         level: "yellow",
-        msg: `Perhatian. ${formatBytes(totalBloat)} sampah ditemukan.`,
+        msg: `Perhatian. ${formatBytes(safeToFree)} siap dibersihkan, sisanya perlu review manual.`,
       };
     }
     return {
       level: "green",
-      msg: `Aman. Hanya ${formatBytes(totalBloat)} sampah terdeteksi.`,
+      msg: `Aman. Mayoritas temuan saat ini berisiko rendah.`,
     };
   })();
 
@@ -1030,7 +1172,7 @@ export default function App() {
             <div>
               <h1>Dokter Storage C</h1>
               <p>
-                Deteksi penyebab Drive C penuh · Bersihkan langsung dari browser
+                Scan, review, lalu bersihkan junk file dengan preflight check
               </p>
             </div>
           </div>
@@ -1136,27 +1278,23 @@ export default function App() {
               <div className="card-sub">{formatNumber(totalFiles)} file</div>
             </div>
             <div className="card card-green">
-              <div className="card-lbl">Aman Dihapus</div>
+              <div className="card-lbl">Siap Dibersihkan</div>
               <div className="card-val">{formatBytes(safeToFree)}</div>
               <div className="card-sub">{safeItems.length} folder</div>
             </div>
             <div className="card card-yellow">
-              <div className="card-lbl">Perlu Diperiksa</div>
-              <div className="card-val">
-                {
-                  results.filter(
-                    (result) => result.safeToDelete === "conditional",
-                  ).length
-                }
-              </div>
-              <div className="card-sub">folder hati-hati</div>
+              <div className="card-lbl">Perlu Review</div>
+              <div className="card-val">{formatNumber(reviewItems.length)}</div>
+              <div className="card-sub">{formatBytes(reviewToFree)}</div>
             </div>
             <div className="card card-blue">
-              <div className="card-lbl">Akses Terbatas</div>
+              <div className="card-lbl">Manual / Tertahan</div>
               <div className="card-val">
-                {formatNumber(scanSummary.inaccessible)}
+                {formatNumber(manualItems.length + unavailableItems.length)}
               </div>
-              <div className="card-sub">target tidak bisa dibaca</div>
+              <div className="card-sub">
+                {formatNumber(unavailableItems.length)} akses tertahan
+              </div>
             </div>
           </div>
         )}
@@ -1172,9 +1310,12 @@ export default function App() {
                 <div key={item.id} className="priority-item">
                   <div className="priority-left">
                     <span className="priority-rank">#{index + 1}</span>
-                    <span className="priority-name">
-                      {item.icon} {item.name}
-                    </span>
+                    <div className="priority-meta">
+                      <span className="priority-name">
+                        {item.icon} {item.name}
+                      </span>
+                      <span className="priority-reason">{item.reason}</span>
+                    </div>
                   </div>
                   <div className="priority-right">
                     <span className="priority-size">
@@ -1189,6 +1330,79 @@ export default function App() {
                     >
                       Pilih
                     </button>
+                    <button
+                      className="sort-btn"
+                      onClick={() => void openFolder(item.id)}
+                    >
+                      Buka Folder
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {done && topReviewCandidates.length > 0 && (
+          <section className="priority-panel">
+            <div className="priority-head">
+              <h3>🔎 Butuh Review Manual</h3>
+              <span>{reviewItems.length} target perlu dicek</span>
+            </div>
+            <div className="priority-list">
+              {topReviewCandidates.map((item, index) => (
+                <div key={item.id} className="priority-item">
+                  <div className="priority-left">
+                    <span className="priority-rank">#{index + 1}</span>
+                    <div className="priority-meta">
+                      <span className="priority-name">
+                        {item.icon} {item.name}
+                      </span>
+                      <span className="priority-reason">{item.reason}</span>
+                    </div>
+                  </div>
+                  <div className="priority-right">
+                    <span className="priority-size">
+                      {formatBytes(item.size)}
+                    </span>
+                    <button
+                      className="sort-btn"
+                      onClick={() => {
+                        setExpanded(item.id);
+                        void openFolder(item.id);
+                      }}
+                    >
+                      Buka Folder
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {done && topManualCandidates.length > 0 && (
+          <section className="priority-panel">
+            <div className="priority-head">
+              <h3>✋ Manual Action Only</h3>
+              <span>{manualItems.length} target berisiko tinggi</span>
+            </div>
+            <div className="priority-list">
+              {topManualCandidates.map((item, index) => (
+                <div key={item.id} className="priority-item">
+                  <div className="priority-left">
+                    <span className="priority-rank">#{index + 1}</span>
+                    <div className="priority-meta">
+                      <span className="priority-name">
+                        {item.icon} {item.name}
+                      </span>
+                      <span className="priority-reason">{item.reason}</span>
+                    </div>
+                  </div>
+                  <div className="priority-right">
+                    <span className="priority-size">
+                      {formatBytes(item.size)}
+                    </span>
                     <button
                       className="sort-btn"
                       onClick={() => void openFolder(item.id)}
@@ -1270,7 +1484,7 @@ export default function App() {
               </div>
               <div className="sort-row">
                 <span className="sort-lbl">Urutkan:</span>
-                {(["size", "name", "safe"] as const).map((value) => (
+                {(["size", "name", "recommendation"] as const).map((value) => (
                   <button
                     key={value}
                     className={`sort-btn ${sortBy === value ? "sort-active" : ""}`}
@@ -1280,7 +1494,7 @@ export default function App() {
                       ? "Ukuran"
                       : value === "name"
                         ? "Nama"
-                        : "Keamanan"}
+                        : "Rekomendasi"}
                   </button>
                 ))}
               </div>
@@ -1300,9 +1514,9 @@ export default function App() {
               {done && safeItems.length > 0 && (
                 <p className="results-hint">
                   💡 Centang item berlabel{" "}
-                  <span className="hint-safe">Aman Dihapus</span> lalu klik{" "}
-                  <strong>Bersihkan</strong> di bawah. Anda juga bisa klik{" "}
-                  <strong>Buka Folder</strong> pada detail item.
+                  <span className="hint-safe">Siap Dibersihkan</span> untuk
+                  masuk batch clean. Item lain tetap ditahan sampai Anda review
+                  manual.
                 </p>
               )}
             </div>
@@ -1318,7 +1532,7 @@ export default function App() {
                   onToggle={() =>
                     setExpanded(expanded === item.id ? null : item.id)
                   }
-                  onCheck={() => toggleSelect(item.id, item.safeToDelete)}
+                  onCheck={() => toggleSelect(item.id, item.recommendation)}
                   onOpenFolder={() => void openFolder(item.id)}
                 />
               ))}
