@@ -1,12 +1,18 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import {
+  cleanTarget as cleanTargetDesktop,
+  getDiskInfo as getDiskInfoDesktop,
+  getTargets as getTargetsDesktop,
+  openTargetFolder as openTargetFolderDesktop,
+  scanTarget as scanTargetDesktop,
+} from "./desktop-api";
 import { getErrorMessage } from "./error";
 import "./index.css";
 import type {
   CleanResult,
   DiskInfo,
-  OpenFolderResult,
   Recommendation,
   RiskLevel,
   SafeLevel,
@@ -37,14 +43,6 @@ function formatDateTime(epochMs: number): string {
     second: "2-digit",
     year: "numeric",
   });
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  if (!response.ok) {
-    throw new Error(`Request gagal (${response.status})`);
-  }
-  return (await response.json()) as T;
 }
 
 const SAFE_MAP: Record<SafeLevel, { label: string; cls: string }> = {
@@ -154,12 +152,6 @@ type SortBy = "name" | "recommendation" | "size";
 type SafetyFilter = "all" | SafeLevel;
 type MinSizeFilter = 0 | 100 | 500 | 1024;
 
-type CleanStreamEvent =
-  | { type: "start"; total: number }
-  | { type: "progress"; current: number; id: string; name: string }
-  | { type: "result"; current: number; id: string; result: CleanResult }
-  | { type: "done" };
-
 const EMPTY_SCAN_SUMMARY: ScanSummary = {
   checked: 0,
   found: 0,
@@ -169,60 +161,6 @@ const EMPTY_SCAN_SUMMARY: ScanSummary = {
   startedAt: null,
   finishedAt: null,
 };
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-function parseCleanStreamEvent(payload: unknown): CleanStreamEvent | null {
-  const record = asRecord(payload);
-  if (!record || typeof record.type !== "string") {
-    return null;
-  }
-
-  switch (record.type) {
-    case "start":
-      if (typeof record.total !== "number") {
-        return null;
-      }
-      return { type: "start", total: record.total };
-    case "progress":
-      if (
-        typeof record.current !== "number" ||
-        typeof record.id !== "string" ||
-        typeof record.name !== "string"
-      ) {
-        return null;
-      }
-      return {
-        type: "progress",
-        current: record.current,
-        id: record.id,
-        name: record.name,
-      };
-    case "result":
-      if (
-        typeof record.current !== "number" ||
-        typeof record.id !== "string" ||
-        !asRecord(record.result)
-      ) {
-        return null;
-      }
-      return {
-        type: "result",
-        current: record.current,
-        id: record.id,
-        result: record.result as CleanResult,
-      };
-    case "done":
-      return { type: "done" };
-    default:
-      return null;
-  }
-}
 
 const DiskUsageBar = memo(function DiskUsageBar({
   total,
@@ -773,7 +711,7 @@ export default function App() {
 
   const refreshDisk = useCallback(async () => {
     try {
-      const data = await fetchJson<DiskInfo>("/api/diskinfo");
+      const data = await getDiskInfoDesktop();
       setDiskInfo(data);
     } catch (error) {
       setNotice(getErrorMessage(error, "Gagal mengambil informasi disk."));
@@ -783,32 +721,12 @@ export default function App() {
   const openFolder = useCallback(async (targetId: string) => {
     setOpeningFolderId(targetId);
     try {
-      const response = await fetch(
-        `/api/open/${encodeURIComponent(targetId)}`,
-        {
-          method: "POST",
-        },
-      );
-      const body = (await response.json()) as
-        | OpenFolderResult
-        | { error?: string; message?: string };
-
-      if (!response.ok) {
-        const failureMessage =
-          ("error" in body && typeof body.error === "string" && body.error) ||
-          ("message" in body &&
-            typeof body.message === "string" &&
-            body.message) ||
-          "Gagal membuka folder.";
-        setNotice(`❌ ${failureMessage}`);
+      const result = await openTargetFolderDesktop(targetId);
+      if (!result.opened) {
+        setNotice(`❌ ${result.message}`);
         return;
       }
-
-      if ("message" in body && typeof body.message === "string") {
-        setNotice(`✅ ${body.message}`);
-      } else {
-        setNotice("✅ Folder berhasil dibuka.");
-      }
+      setNotice(`✅ ${result.message}`);
     } catch (error) {
       setNotice(`❌ ${getErrorMessage(error, "Gagal membuka folder.")}`);
     } finally {
@@ -819,7 +737,7 @@ export default function App() {
   useEffect(() => {
     const loadInitial = async () => {
       try {
-        const loadedTargets = await fetchJson<Target[]>("/api/targets");
+        const loadedTargets = await getTargetsDesktop();
         setTargets(loadedTargets);
       } catch (error) {
         setNotice(
@@ -866,9 +784,7 @@ export default function App() {
       setScanningName(target.name);
 
       try {
-        const scanned = await fetchJson<ScannedTarget>(
-          `/api/scan/${encodeURIComponent(target.id)}`,
-        );
+        const scanned = await scanTargetDesktop(target.id);
         if (scanned.availabilityStatus === "missing") {
           nextSummary.missing++;
         } else if (scanned.availabilityStatus === "inaccessible") {
@@ -920,79 +836,31 @@ export default function App() {
     setCleanName("");
 
     try {
-      const response = await fetch("/api/clean/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Gagal memulai pembersihan (${response.status})`);
-      }
-      if (!response.body) {
-        throw new Error("Streaming progress tidak tersedia");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
       let freedAccumulator = 0;
 
-      while (true) {
-        const { value, done: streamDone } = await reader.read();
-        if (streamDone) {
-          break;
+      for (let index = 0; index < ids.length; index++) {
+        const id = ids[index];
+        if (!id) {
+          continue;
         }
 
-        buffer += decoder.decode(value, { stream: true });
-        const chunks = buffer.split("\n\n");
-        buffer = chunks.pop() ?? "";
+        const target = results.find((item) => item.id === id);
+        setCleanCurrent(index);
+        setCleanName(target?.name ?? id);
 
-        for (const chunk of chunks) {
-          const line = chunk.trim();
-          if (!line.startsWith("data: ")) {
-            continue;
-          }
-
-          let parsed: unknown;
-          try {
-            parsed = JSON.parse(line.slice(6));
-          } catch {
-            continue;
-          }
-
-          const event = parseCleanStreamEvent(parsed);
-          if (!event) {
-            continue;
-          }
-
-          if (event.type === "start") {
-            setCleanTotal(event.total);
-            continue;
-          }
-          if (event.type === "progress") {
-            setCleanCurrent(event.current - 1);
-            setCleanName(event.name);
-            continue;
-          }
-          if (event.type === "result") {
-            freedAccumulator += event.result.freedBytes;
-            setCleanCurrent(event.current);
-            setCleanFreed(freedAccumulator);
-            setCleanResults((previous) => [...previous, event.result]);
-            continue;
-          }
-          if (event.type === "done") {
-            setCleanDone(true);
-          }
-        }
+        const result = await cleanTargetDesktop(id);
+        freedAccumulator += result.freedBytes;
+        setCleanCurrent(index + 1);
+        setCleanFreed(freedAccumulator);
+        setCleanResults((previous) => [...previous, result]);
       }
+
       setCleanDone(true);
     } catch (error) {
       setNotice(getErrorMessage(error, "Pembersihan gagal dijalankan."));
       setCleanDone(true);
     }
-  }, [selected]);
+  }, [results, selected]);
 
   const afterCleanClose = useCallback(() => {
     setShowProgress(false);

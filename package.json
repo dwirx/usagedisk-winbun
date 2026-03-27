@@ -15,6 +15,9 @@
     "check": "bun run typecheck && bun run lint && bun run fmt:check",
     "//3": "=== Convenience ===",
     "start": "bun --hot src/server.ts",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:check": "bun run check && cargo check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml",
     "fix": "bun run lint:fix && bun run fmt",
     "bench": "bash scripts/bench.sh",
     "prepare": "husky"
@@ -25,6 +28,7 @@
   },
   "devDependencies": {
     "@nkzw/oxlint-config": "^1.0.1",
+    "@tauri-apps/cli": "^2.10.1",
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
