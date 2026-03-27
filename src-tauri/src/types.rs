@@ -33,6 +33,22 @@ pub enum RiskLevel {
     High,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanMode {
+    Quick,
+    Deep,
+    Adaptive,
+}
+
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanPhase {
+    Quick,
+    Deep,
+    Diagnostics,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
@@ -88,10 +104,27 @@ pub struct ScannedTarget {
     pub skipped_items: u64,
     pub availability_status: AvailabilityStatus,
     pub scan_note: Option<String>,
+    pub is_estimate: bool,
+    pub deep_scan_completed: bool,
+    pub scan_mode_used: ScanMode,
     pub recommendation: Recommendation,
     pub risk_level: RiskLevel,
     pub reason: String,
     pub evidence: ScanEvidence,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdvisoryFinding {
+    pub id: String,
+    pub name: String,
+    pub category: String,
+    pub severity: RiskLevel,
+    pub size: u64,
+    pub reason: String,
+    pub suggested_action: String,
+    pub path: Option<String>,
+    pub scan_note: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -123,4 +156,31 @@ pub struct OpenFolderResult {
     pub opened: bool,
     pub message: String,
     pub path: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanJobSummary {
+    pub checked: usize,
+    pub found: usize,
+    pub missing: usize,
+    pub inaccessible: usize,
+    pub skipped_items: u64,
+    pub advisories: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanJobEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub job_id: String,
+    pub phase: Option<ScanPhase>,
+    pub current: Option<usize>,
+    pub total: Option<usize>,
+    pub label: Option<String>,
+    pub item: Option<ScannedTarget>,
+    pub advisory: Option<AdvisoryFinding>,
+    pub summary: Option<ScanJobSummary>,
+    pub message: Option<String>,
 }

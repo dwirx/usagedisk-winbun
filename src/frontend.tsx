@@ -1,21 +1,35 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 
 import {
+  cancelScanJob as cancelScanJobDesktop,
   cleanTarget as cleanTargetDesktop,
   getDiskInfo as getDiskInfoDesktop,
   getTargets as getTargetsDesktop,
+  isDesktopRuntime,
+  listenScanEvents,
   openTargetFolder as openTargetFolderDesktop,
   scanTarget as scanTargetDesktop,
+  startScanJob as startScanJobDesktop,
 } from "./desktop-api";
 import { getErrorMessage } from "./error";
 import "./index.css";
 import type {
+  AdvisoryFinding,
   CleanResult,
   DiskInfo,
   Recommendation,
   RiskLevel,
   SafeLevel,
+  ScanJobEvent,
+  ScanPhase,
   ScannedTarget,
   Target,
 } from "./types";
@@ -109,6 +123,7 @@ interface ScanSummary {
   missing: number;
   inaccessible: number;
   skippedItems: number;
+  advisories: number;
   startedAt: number | null;
   finishedAt: number | null;
 }
@@ -158,9 +173,44 @@ const EMPTY_SCAN_SUMMARY: ScanSummary = {
   inaccessible: 0,
   missing: 0,
   skippedItems: 0,
+  advisories: 0,
   startedAt: null,
   finishedAt: null,
 };
+
+const SCAN_PHASE_LABEL: Record<ScanPhase, string> = {
+  quick: "Quick Scan",
+  deep: "Deep Scan",
+  diagnostics: "Diagnostics",
+};
+
+function shouldShowTarget(item: ScannedTarget): boolean {
+  return item.size > 0 || item.availabilityStatus === "inaccessible";
+}
+
+function upsertScannedTarget(
+  items: ScannedTarget[],
+  incoming: ScannedTarget,
+): ScannedTarget[] {
+  const index = items.findIndex((item) => item.id === incoming.id);
+
+  if (!shouldShowTarget(incoming)) {
+    if (index === -1) {
+      return items;
+    }
+    const next = items.slice();
+    next.splice(index, 1);
+    return next;
+  }
+
+  if (index === -1) {
+    return [...items, incoming];
+  }
+
+  const next = items.slice();
+  next[index] = incoming;
+  return next;
+}
 
 const DiskUsageBar = memo(function DiskUsageBar({
   total,
@@ -661,10 +711,13 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const [scanning, setScanning] = useState(false);
+  const [scanJobId, setScanJobId] = useState<string | null>(null);
+  const [scanPhase, setScanPhase] = useState<ScanPhase>("quick");
   const [progress, setProgress] = useState({ current: 0, total: 1 });
   const [scanningName, setScanningName] = useState("");
   const [scanSummary, setScanSummary] =
     useState<ScanSummary>(EMPTY_SCAN_SUMMARY);
+  const [advisories, setAdvisories] = useState<AdvisoryFinding[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [activeTab, setActiveTab] = useState("Semua");
@@ -750,37 +803,19 @@ export default function App() {
     void loadInitial();
   }, [refreshDisk]);
 
-  const startScan = useCallback(async () => {
-    if (targets.length === 0) {
-      setNotice("Daftar target belum tersedia, coba beberapa detik lagi.");
-      return;
-    }
-
-    setNotice(null);
-    setScanning(true);
-    setDone(false);
-    setExpanded(null);
-    setResults([]);
-    setSelected(new Set());
-    setProgress({ current: 0, total: targets.length });
-
+  const runLegacyScan = useCallback(async () => {
     const nextSummary: ScanSummary = {
-      checked: 0,
-      found: 0,
-      inaccessible: 0,
-      missing: 0,
-      skippedItems: 0,
+      ...EMPTY_SCAN_SUMMARY,
       startedAt: Date.now(),
-      finishedAt: null,
     };
-    setScanSummary(nextSummary);
 
-    const discovered: ScannedTarget[] = [];
     for (let index = 0; index < targets.length; index++) {
       const target = targets[index];
       if (!target) {
         continue;
       }
+
+      setScanPhase("quick");
       setScanningName(target.name);
 
       try {
@@ -792,12 +827,13 @@ export default function App() {
         }
 
         nextSummary.skippedItems += scanned.skippedItems;
-        if (scanned.size > 0 || scanned.availabilityStatus === "inaccessible") {
-          discovered.push(scanned);
-        }
         if (scanned.size > 0) {
           nextSummary.found++;
         }
+
+        startTransition(() => {
+          setResults((previous) => upsertScannedTarget(previous, scanned));
+        });
       } catch (error) {
         nextSummary.inaccessible++;
         setNotice(getErrorMessage(error, "Sebagian target gagal dipindai."));
@@ -805,9 +841,6 @@ export default function App() {
 
       nextSummary.checked = index + 1;
       setProgress({ current: index + 1, total: targets.length });
-      setResults(
-        discovered.slice().sort((left, right) => right.size - left.size),
-      );
       setScanSummary({ ...nextSummary });
     }
 
@@ -818,6 +851,165 @@ export default function App() {
     setDone(true);
     await refreshDisk();
   }, [refreshDisk, targets]);
+
+  const applyScanEvent = useCallback(
+    async (
+      event: ScanJobEvent,
+      cleanup: () => Promise<void>,
+      startedAt: number,
+    ) => {
+      if (event.phase) {
+        setScanPhase(event.phase);
+      }
+
+      if (event.label) {
+        setScanningName(event.label);
+      }
+
+      if (
+        event.type === "started" ||
+        event.type === "progress" ||
+        event.type === "done" ||
+        event.type === "cancelled"
+      ) {
+        setProgress({
+          current: event.current ?? 0,
+          total: event.total ?? targets.length,
+        });
+      }
+
+      if (event.type === "target" && event.item) {
+        startTransition(() => {
+          setResults((previous) => upsertScannedTarget(previous, event.item!));
+        });
+        return;
+      }
+
+      if (event.type === "advisory" && event.advisory) {
+        startTransition(() => {
+          setAdvisories((previous) =>
+            previous.some((item) => item.id === event.advisory!.id)
+              ? previous
+              : [...previous, event.advisory!],
+          );
+        });
+        return;
+      }
+
+      if (event.type === "done") {
+        setScanSummary({
+          checked: event.summary?.checked ?? results.length,
+          found: event.summary?.found ?? 0,
+          inaccessible: event.summary?.inaccessible ?? 0,
+          missing: event.summary?.missing ?? 0,
+          skippedItems: event.summary?.skippedItems ?? 0,
+          advisories: event.summary?.advisories ?? advisories.length,
+          startedAt,
+          finishedAt: Date.now(),
+        });
+        setScanning(false);
+        setScanningName("");
+        setDone(true);
+        setScanJobId(null);
+        await cleanup();
+        await refreshDisk();
+        return;
+      }
+
+      if (event.type === "cancelled") {
+        setNotice(event.message ?? "Scan dibatalkan.");
+        setScanning(false);
+        setScanningName("");
+        setDone(false);
+        setScanJobId(null);
+        await cleanup();
+        return;
+      }
+
+      if (event.type === "error") {
+        setNotice(event.message ?? "Scan desktop gagal dijalankan.");
+        setScanning(false);
+        setScanningName("");
+        setDone(false);
+        setScanJobId(null);
+        await cleanup();
+      }
+    },
+    [advisories.length, refreshDisk, results.length, targets.length],
+  );
+
+  const startScan = useCallback(async () => {
+    if (targets.length === 0) {
+      setNotice("Daftar target belum tersedia, coba beberapa detik lagi.");
+      return;
+    }
+
+    setNotice(null);
+    setScanning(true);
+    setScanJobId(null);
+    setScanPhase("quick");
+    setDone(false);
+    setExpanded(null);
+    setResults([]);
+    setAdvisories([]);
+    setSelected(new Set());
+    setProgress({ current: 0, total: targets.length });
+    setScanningName("");
+    setScanSummary({
+      ...EMPTY_SCAN_SUMMARY,
+      startedAt: Date.now(),
+    });
+
+    if (!isDesktopRuntime()) {
+      await runLegacyScan();
+      return;
+    }
+
+    const startedAt = Date.now();
+    let currentJobId: string | null = null;
+    const unlisten = await listenScanEvents((event) => {
+      if (currentJobId && event.jobId !== currentJobId) {
+        return;
+      }
+
+      if (!currentJobId && event.type === "started") {
+        currentJobId = event.jobId;
+        setScanJobId(event.jobId);
+      }
+
+      if (!currentJobId) {
+        return;
+      }
+
+      void applyScanEvent(event, async () => unlisten(), startedAt);
+    });
+
+    try {
+      const jobId = await startScanJobDesktop("adaptive");
+      currentJobId = jobId;
+      setScanJobId(jobId);
+    } catch (error) {
+      await unlisten();
+      setScanJobId(null);
+      setNotice(
+        `${getErrorMessage(error, "Gagal memulai background scan.")} Fallback ke scan kompatibilitas.`,
+      );
+      await runLegacyScan();
+    }
+  }, [applyScanEvent, runLegacyScan, targets.length]);
+
+  const cancelCurrentScan = useCallback(async () => {
+    if (!scanJobId) {
+      return;
+    }
+
+    try {
+      await cancelScanJobDesktop(scanJobId);
+      setNotice("Membatalkan scan aktif...");
+    } catch (error) {
+      setNotice(getErrorMessage(error, "Gagal membatalkan scan aktif."));
+    }
+  }, [scanJobId]);
 
   const doClean = useCallback(async () => {
     if (selected.size === 0) {
@@ -874,63 +1066,103 @@ export default function App() {
     progress.total > 0
       ? Math.round((progress.current / progress.total) * 100)
       : 0;
-  const totalBloat = results.reduce((sum, row) => sum + row.size, 0);
-  const totalFiles = results.reduce((sum, row) => sum + row.files, 0);
-  const safeItems = results.filter((row) => row.recommendation === "clean_now");
-  const reviewItems = results.filter(
-    (row) => row.recommendation === "review_first",
+  const totalBloat = useMemo(
+    () => results.reduce((sum, row) => sum + row.size, 0),
+    [results],
   );
-  const manualItems = results.filter(
-    (row) => row.recommendation === "manual_only",
+  const totalFiles = useMemo(
+    () => results.reduce((sum, row) => sum + row.files, 0),
+    [results],
   );
-  const unavailableItems = results.filter(
-    (row) => row.recommendation === "unavailable",
+  const safeItems = useMemo(
+    () => results.filter((row) => row.recommendation === "clean_now"),
+    [results],
   );
-  const safeToFree = safeItems.reduce((sum, row) => sum + row.size, 0);
-  const reviewToFree = reviewItems.reduce((sum, row) => sum + row.size, 0);
+  const reviewItems = useMemo(
+    () => results.filter((row) => row.recommendation === "review_first"),
+    [results],
+  );
+  const manualItems = useMemo(
+    () => results.filter((row) => row.recommendation === "manual_only"),
+    [results],
+  );
+  const unavailableItems = useMemo(
+    () => results.filter((row) => row.recommendation === "unavailable"),
+    [results],
+  );
+  const safeToFree = useMemo(
+    () => safeItems.reduce((sum, row) => sum + row.size, 0),
+    [safeItems],
+  );
+  const reviewToFree = useMemo(
+    () => reviewItems.reduce((sum, row) => sum + row.size, 0),
+    [reviewItems],
+  );
+  const advisoryBytes = useMemo(
+    () => advisories.reduce((sum, item) => sum + item.size, 0),
+    [advisories],
+  );
   const minBytes = minSizeFilter === 0 ? 0 : minSizeFilter * 1024 * 1024;
-  const topSafeCandidates = safeItems
-    .slice()
-    .sort((left, right) => right.size - left.size)
-    .slice(0, 5);
-  const topReviewCandidates = reviewItems
-    .slice()
-    .sort((left, right) => right.size - left.size)
-    .slice(0, 4);
-  const topManualCandidates = manualItems
-    .slice()
-    .sort((left, right) => right.size - left.size)
-    .slice(0, 3);
+  const topSafeCandidates = useMemo(
+    () =>
+      safeItems
+        .slice()
+        .sort((left, right) => right.size - left.size)
+        .slice(0, 5),
+    [safeItems],
+  );
+  const topReviewCandidates = useMemo(
+    () =>
+      reviewItems
+        .slice()
+        .sort((left, right) => right.size - left.size)
+        .slice(0, 4),
+    [reviewItems],
+  );
+  const topManualCandidates = useMemo(
+    () =>
+      manualItems
+        .slice()
+        .sort((left, right) => right.size - left.size)
+        .slice(0, 3),
+    [manualItems],
+  );
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const filtered = results
-    .filter((row) => activeTab === "Semua" || row.type === activeTab)
-    .filter((row) => safeFilter === "all" || row.safeToDelete === safeFilter)
-    .filter((row) => row.size >= minBytes)
-    .filter((row) => {
-      if (normalizedQuery.length === 0) {
-        return true;
-      }
-      return (
-        row.name.toLowerCase().includes(normalizedQuery) ||
-        row.path.toLowerCase().includes(normalizedQuery) ||
-        row.type.toLowerCase().includes(normalizedQuery) ||
-        row.reason.toLowerCase().includes(normalizedQuery)
-      );
-    })
-    .sort((left, right) => {
-      if (sortBy === "name") {
-        return left.name.localeCompare(right.name);
-      }
-      if (sortBy === "recommendation") {
-        return (
-          RECOMMENDATION_ORDER[left.recommendation] -
-            RECOMMENDATION_ORDER[right.recommendation] ||
-          SAFE_ORDER[left.safeToDelete] - SAFE_ORDER[right.safeToDelete]
-        );
-      }
-      return right.size - left.size;
-    });
+  const filtered = useMemo(
+    () =>
+      results
+        .filter((row) => activeTab === "Semua" || row.type === activeTab)
+        .filter(
+          (row) => safeFilter === "all" || row.safeToDelete === safeFilter,
+        )
+        .filter((row) => row.size >= minBytes)
+        .filter((row) => {
+          if (normalizedQuery.length === 0) {
+            return true;
+          }
+          return (
+            row.name.toLowerCase().includes(normalizedQuery) ||
+            row.path.toLowerCase().includes(normalizedQuery) ||
+            row.type.toLowerCase().includes(normalizedQuery) ||
+            row.reason.toLowerCase().includes(normalizedQuery)
+          );
+        })
+        .sort((left, right) => {
+          if (sortBy === "name") {
+            return left.name.localeCompare(right.name);
+          }
+          if (sortBy === "recommendation") {
+            return (
+              RECOMMENDATION_ORDER[left.recommendation] -
+                RECOMMENDATION_ORDER[right.recommendation] ||
+              SAFE_ORDER[left.safeToDelete] - SAFE_ORDER[right.safeToDelete]
+            );
+          }
+          return right.size - left.size;
+        }),
+    [activeTab, minBytes, normalizedQuery, results, safeFilter, sortBy],
+  );
 
   const toggleSelect = useCallback(
     (id: string, recommendation: Recommendation) => {
@@ -1046,11 +1278,11 @@ export default function App() {
           </div>
           <button
             className="btn-scan"
-            onClick={startScan}
-            disabled={scanning || showProgress}
+            onClick={scanning ? () => void cancelCurrentScan() : startScan}
+            disabled={showProgress}
           >
             {scanning
-              ? `⏳ Memindai... ${pct}%`
+              ? "⏹️ Batalkan Scan"
               : done
                 ? "🔁 Scan Ulang"
                 : "🔍 Mulai Pemindaian"}
@@ -1076,16 +1308,28 @@ export default function App() {
         {scanning && (
           <div className="progress-card">
             <div className="progress-top">
-              <span>
-                🔎 Menganalisis: <strong>{scanningName}</strong>
+              <span className="progress-title">
+                <strong>{SCAN_PHASE_LABEL[scanPhase]}</strong>
+                <span className="progress-divider">·</span>🔎 Menganalisis:{" "}
+                <strong>{scanningName}</strong>
               </span>
-              <span className="prog-pct">{pct}%</span>
+              <div className="progress-actions">
+                <span className="prog-pct">{pct}%</span>
+                {scanJobId && (
+                  <button
+                    className="btn-cancel-scan"
+                    onClick={() => void cancelCurrentScan()}
+                  >
+                    Batalkan
+                  </button>
+                )}
+              </div>
             </div>
             <div className="prog-track">
               <div className="prog-fill" style={{ width: `${pct}%` }} />
             </div>
             <p className="prog-sub">
-              {progress.current} / {progress.total} folder diperiksa
+              {progress.current} / {progress.total} item selesai diproses
             </p>
           </div>
         )}
@@ -1129,6 +1373,10 @@ export default function App() {
                 <span>Item Terlewati</span>
                 <strong>{formatNumber(scanSummary.skippedItems)}</strong>
               </div>
+              <div className="scan-chip">
+                <span>Advisory</span>
+                <strong>{formatNumber(scanSummary.advisories)}</strong>
+              </div>
             </div>
             {scanSummary.finishedAt && (
               <p className="scan-summary-time">
@@ -1138,7 +1386,7 @@ export default function App() {
           </div>
         )}
 
-        {results.length > 0 && (
+        {(results.length > 0 || advisories.length > 0) && (
           <div className="cards">
             <div className="card card-red">
               <div className="card-lbl">Total Sampah</div>
@@ -1162,6 +1410,13 @@ export default function App() {
               </div>
               <div className="card-sub">
                 {formatNumber(unavailableItems.length)} akses tertahan
+              </div>
+            </div>
+            <div className="card card-purple">
+              <div className="card-lbl">Disk Hog Advisory</div>
+              <div className="card-val">{formatBytes(advisoryBytes)}</div>
+              <div className="card-sub">
+                {formatNumber(advisories.length)} temuan
               </div>
             </div>
           </div>
@@ -1280,6 +1535,48 @@ export default function App() {
                   </div>
                 </div>
               ))}
+            </div>
+          </section>
+        )}
+
+        {done && advisories.length > 0 && (
+          <section className="priority-panel">
+            <div className="priority-head">
+              <h3>🧠 Penyebab Disk Penuh Lainnya</h3>
+              <span>{advisories.length} advisory non-auto-clean</span>
+            </div>
+            <div className="priority-list">
+              {advisories
+                .slice()
+                .sort((left, right) => right.size - left.size)
+                .map((item) => (
+                  <div key={item.id} className="priority-item advisory-item">
+                    <div className="priority-left">
+                      <span
+                        className={`risk-pill ${RISK_MAP[item.severity].cls}`}
+                      >
+                        {RISK_MAP[item.severity].label}
+                      </span>
+                      <div className="priority-meta">
+                        <span className="priority-name">
+                          {item.name} · {item.category}
+                        </span>
+                        <span className="priority-reason">{item.reason}</span>
+                        <span className="priority-reason advisory-action">
+                          Saran: {item.suggestedAction}
+                        </span>
+                        {item.path && (
+                          <code className="advisory-path">{item.path}</code>
+                        )}
+                      </div>
+                    </div>
+                    <div className="priority-right">
+                      <span className="priority-size">
+                        {formatBytes(item.size)}
+                      </span>
+                    </div>
+                  </div>
+                ))}
             </div>
           </section>
         )}
@@ -1426,13 +1723,24 @@ export default function App() {
           </div>
         )}
 
-        {done && results.length === 0 && (
+        {done && results.length === 0 && advisories.length === 0 && (
           <div className="empty">
             <div className="empty-icon">✨</div>
             <h2>Tidak ada folder besar terdeteksi</h2>
             <p>
               Target berhasil dipindai, tetapi tidak ada folder cache signifikan
               yang perlu dibersihkan saat ini.
+            </p>
+          </div>
+        )}
+
+        {done && results.length === 0 && advisories.length > 0 && (
+          <div className="empty">
+            <div className="empty-icon">🧠</div>
+            <h2>Cache aman relatif sedikit, tapi ada disk hog lain</h2>
+            <p>
+              Tidak ada target auto-clean besar yang terdeteksi, namun advisory
+              di atas menunjukkan file atau area sistem lain yang memakan ruang.
             </p>
           </div>
         )}

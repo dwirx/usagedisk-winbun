@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   CleanResult,
   DiskInfo,
   OpenFolderResult,
+  ScanJobEvent,
+  ScanMode,
   ScannedTarget,
   Target,
 } from "./types";
@@ -23,6 +26,10 @@ function isTauriCommandUnavailable(error: unknown): boolean {
       error.message.includes("Cannot read properties of undefined") ||
       error.message.includes("ipc"))
   );
+}
+
+export function isDesktopRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 async function invokeOrFallback<T>(
@@ -56,6 +63,22 @@ export function scanTarget(id: string): Promise<ScannedTarget> {
   return invokeOrFallback("scan_target", { id }, () =>
     fetchJson<ScannedTarget>(`/api/scan/${encodeURIComponent(id)}`),
   );
+}
+
+export function startScanJob(mode: ScanMode): Promise<string> {
+  return invoke<string>("start_scan", { mode });
+}
+
+export function cancelScanJob(jobId: string): Promise<void> {
+  return invoke<void>("cancel_scan", { jobId });
+}
+
+export function listenScanEvents(
+  handler: (event: ScanJobEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ScanJobEvent>("scan://event", ({ payload }) => {
+    handler(payload);
+  });
 }
 
 export function cleanTarget(id: string): Promise<CleanResult> {

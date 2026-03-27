@@ -195,14 +195,44 @@ body {
 .progress-top {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
   font-size: 13px;
   color: #cbd5e1;
   margin-bottom: 10px;
+}
+.progress-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.progress-divider {
+  color: #475569;
+}
+.progress-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .prog-pct {
   font-weight: 700;
   color: #60a5fa;
   font-size: 15px;
+}
+.btn-cancel-scan {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 8px;
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+.btn-cancel-scan:hover {
+  background: rgba(239, 68, 68, 0.08);
 }
 .prog-track {
   width: 100%;
@@ -257,9 +287,14 @@ body {
 /* ── SUMMARY CARDS ───────────────────────────────────────── */
 .cards {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 14px;
   margin-bottom: 28px;
+}
+@media (max-width: 1024px) {
+  .cards {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 @media (max-width: 700px) {
   .cards {
@@ -287,6 +322,10 @@ body {
 .card-blue {
   background: rgba(59, 130, 246, 0.08);
   border-color: rgba(59, 130, 246, 0.2);
+}
+.card-purple {
+  background: rgba(168, 85, 247, 0.08);
+  border-color: rgba(168, 85, 247, 0.2);
 }
 .card-lbl {
   font-size: 11px;
@@ -317,7 +356,7 @@ body {
 .scan-summary-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 @media (max-width: 900px) {
   .scan-summary-grid {
@@ -429,6 +468,24 @@ body {
   font-family: monospace;
   font-size: 12px;
   margin-right: 2px;
+}
+.advisory-item {
+  align-items: flex-start;
+}
+.advisory-action {
+  color: #cbd5e1;
+  white-space: normal;
+}
+.advisory-path {
+  background: #111827;
+  border-radius: 6px;
+  color: #93c5fd;
+  display: inline-block;
+  font-size: 11px;
+  margin-top: 4px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
 }
 
 /* ── TOOLBAR ─────────────────────────────────────────────── */

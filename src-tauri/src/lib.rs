@@ -1,11 +1,13 @@
 mod analysis;
 mod catalog;
 mod commands;
+mod scan_jobs;
 mod types;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(scan_jobs::ScanManager::default())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -17,6 +19,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            scan_jobs::cancel_scan,
+            scan_jobs::start_scan,
             commands::clean_target,
             commands::get_disk_info,
             commands::get_targets,

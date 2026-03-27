@@ -6,6 +6,8 @@ export type Recommendation =
   | "manual_only"
   | "unavailable";
 export type RiskLevel = "low" | "medium" | "high";
+export type ScanMode = "quick" | "deep" | "adaptive";
+export type ScanPhase = "quick" | "deep" | "diagnostics";
 
 export interface Target {
   id: string;
@@ -42,10 +44,25 @@ export interface ScannedTarget extends Target {
   skippedItems: number;
   availabilityStatus: AvailabilityStatus;
   scanNote?: string;
+  isEstimate: boolean;
+  deepScanCompleted: boolean;
+  scanModeUsed: ScanMode;
   recommendation: Recommendation;
   riskLevel: RiskLevel;
   reason: string;
   evidence: ScanEvidence;
+}
+
+export interface AdvisoryFinding {
+  id: string;
+  name: string;
+  category: string;
+  severity: RiskLevel;
+  size: number;
+  reason: string;
+  suggestedAction: string;
+  path?: string;
+  scanNote?: string;
 }
 
 export type CleanVerificationStatus = "verified" | "partial" | "blocked";
@@ -67,4 +84,33 @@ export interface OpenFolderResult {
   opened: boolean;
   message: string;
   path: string;
+}
+
+export interface ScanJobSummary {
+  checked: number;
+  found: number;
+  missing: number;
+  inaccessible: number;
+  skippedItems: number;
+  advisories: number;
+}
+
+export interface ScanJobEvent {
+  type:
+    | "started"
+    | "progress"
+    | "target"
+    | "advisory"
+    | "done"
+    | "cancelled"
+    | "error";
+  jobId: string;
+  phase?: ScanPhase;
+  current?: number;
+  total?: number;
+  label?: string;
+  item?: ScannedTarget;
+  advisory?: AdvisoryFinding;
+  summary?: ScanJobSummary;
+  message?: string;
 }

@@ -6,7 +6,7 @@ use crate::analysis::{build_scan_assessment, can_auto_clean};
 use crate::catalog::{target_by_id, targets};
 use crate::types::{
     AvailabilityStatus, CleanResult, CleanVerificationStatus, DiskInfo, OpenFolderResult,
-    ScannedTarget, Target,
+    ScanMode, ScannedTarget, Target,
 };
 
 struct SizeScanResult {
@@ -74,6 +74,11 @@ fn get_dir_size_and_count(dir_path: &Path) -> SizeScanResult {
                 continue;
             }
         };
+
+        if file_type.is_symlink() {
+            skipped_items += 1;
+            continue;
+        }
 
         if file_type.is_dir() {
             let result = get_dir_size_and_count(&path);
@@ -227,6 +232,9 @@ fn build_scanned_target(
         skipped_items,
         availability_status,
         scan_note,
+        is_estimate: false,
+        deep_scan_completed: true,
+        scan_mode_used: ScanMode::Deep,
         recommendation: assessment.recommendation,
         risk_level: assessment.risk_level,
         reason: assessment.reason,
