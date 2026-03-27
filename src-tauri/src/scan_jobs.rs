@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::analysis::build_scan_assessment;
 use crate::catalog::targets;
+use crate::drive_analysis::run_drive_analysis;
 use crate::types::{
     AdvisoryFinding, AvailabilityStatus, RiskLevel, ScanJobEvent, ScanJobSummary, ScanMode,
     ScanPhase, ScannedTarget, SafeLevel, Target,
@@ -571,6 +572,29 @@ fn emit(app: &AppHandle, event: ScanJobEvent) {
     let _ = app.emit(SCAN_EVENT_NAME, event);
 }
 
+fn emit_storage_batches(app: &AppHandle, job_id: &str, nodes: &[crate::types::StorageNode]) {
+    for batch in nodes.chunks(80) {
+        emit(
+            app,
+            ScanJobEvent {
+                event_type: "storage_batch".to_string(),
+                job_id: job_id.to_string(),
+                phase: Some(ScanPhase::Deep),
+                current: None,
+                total: None,
+                label: None,
+                item: None,
+                advisory: None,
+                storage_nodes: Some(batch.to_vec()),
+                largest_items: None,
+                drive_summary: None,
+                summary: None,
+                message: None,
+            },
+        );
+    }
+}
+
 #[tauri::command]
 pub fn start_scan(app: AppHandle, state: State<'_, ScanManager>, mode: ScanMode) -> Result<String, String> {
     let job_id = Uuid::new_v4().to_string();
@@ -585,44 +609,86 @@ pub fn start_scan(app: AppHandle, state: State<'_, ScanManager>, mode: ScanMode)
         let mut results = HashMap::<String, ScannedTarget>::new();
         let mut deep_candidates = Vec::<Target>::new();
 
-        emit(&app_handle, ScanJobEvent { event_type: "started".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(0), total: Some(target_list.len()), label: Some("Scan dimulai".to_string()), item: None, advisory: None, summary: None, message: None });
+        emit(&app_handle, ScanJobEvent { event_type: "started".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(0), total: Some(target_list.len()), label: Some("Scan dimulai".to_string()), item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
 
         for (index, target) in target_list.iter().cloned().enumerate() {
             if is_cancelled(&cancel_flag) {
-                emit(&app_handle, ScanJobEvent { event_type: "cancelled".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(index), total: Some(target_list.len()), label: None, item: None, advisory: None, summary: Some(summary_of(&results, 0)), message: Some("Scan dibatalkan.".to_string()) });
+                emit(&app_handle, ScanJobEvent { event_type: "cancelled".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(index), total: Some(target_list.len()), label: None, item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: Some(summary_of(&results, 0)), message: Some("Scan dibatalkan.".to_string()) });
                 if let Ok(mut jobs) = jobs.lock() { jobs.remove(&job_id_for_task); }
                 return;
             }
 
-            emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(index + 1), total: Some(target_list.len()), label: Some(target.name.clone()), item: None, advisory: None, summary: None, message: None });
+            emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(index + 1), total: Some(target_list.len()), label: Some(target.name.clone()), item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
             let (quick, needs_deep) = quick_scan_target(target.clone(), mode.clone());
             results.insert(quick.target.id.clone(), quick.clone());
             if mode == ScanMode::Adaptive && needs_deep { deep_candidates.push(target); }
-            emit(&app_handle, ScanJobEvent { event_type: "target".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: None, total: None, label: None, item: Some(quick), advisory: None, summary: None, message: None });
+            emit(&app_handle, ScanJobEvent { event_type: "target".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: None, total: None, label: None, item: Some(quick), advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
         }
 
         if mode != ScanMode::Quick {
             let deep_list = if mode == ScanMode::Deep { target_list.clone() } else { deep_candidates.clone() };
             for (index, target) in deep_list.into_iter().enumerate() {
                 if is_cancelled(&cancel_flag) {
-                    emit(&app_handle, ScanJobEvent { event_type: "cancelled".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: Some(index), total: Some(deep_candidates.len()), label: None, item: None, advisory: None, summary: Some(summary_of(&results, 0)), message: Some("Scan dibatalkan.".to_string()) });
+                    emit(&app_handle, ScanJobEvent { event_type: "cancelled".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: Some(index), total: Some(deep_candidates.len()), label: None, item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: Some(summary_of(&results, 0)), message: Some("Scan dibatalkan.".to_string()) });
                     if let Ok(mut jobs) = jobs.lock() { jobs.remove(&job_id_for_task); }
                     return;
                 }
-                emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: Some(index + 1), total: Some(if mode == ScanMode::Deep { target_list.len() } else { deep_candidates.len() }), label: Some(target.name.clone()), item: None, advisory: None, summary: None, message: None });
+                emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: Some(index + 1), total: Some(if mode == ScanMode::Deep { target_list.len() } else { deep_candidates.len() }), label: Some(target.name.clone()), item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
                 let deep = deep_scan_target(target, &cancel_flag, mode.clone());
                 results.insert(deep.target.id.clone(), deep.clone());
-                emit(&app_handle, ScanJobEvent { event_type: "target".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: None, total: None, label: None, item: Some(deep), advisory: None, summary: None, message: None });
+                emit(&app_handle, ScanJobEvent { event_type: "target".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: None, total: None, label: None, item: Some(deep), advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
             }
         }
 
         let advisories = detect_advisories(&cancel_flag);
         for (index, advisory) in advisories.iter().cloned().enumerate() {
-            emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: Some(index + 1), total: Some(advisories.len()), label: Some(advisory.name.clone()), item: None, advisory: None, summary: None, message: None });
-            emit(&app_handle, ScanJobEvent { event_type: "advisory".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: None, total: None, label: None, item: None, advisory: Some(advisory), summary: None, message: None });
+            emit(&app_handle, ScanJobEvent { event_type: "progress".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: Some(index + 1), total: Some(advisories.len()), label: Some(advisory.name.clone()), item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
+            emit(&app_handle, ScanJobEvent { event_type: "advisory".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: None, total: None, label: None, item: None, advisory: Some(advisory), storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
         }
 
-        emit(&app_handle, ScanJobEvent { event_type: "done".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: Some(results.len()), total: Some(target_list.len()), label: None, item: None, advisory: None, summary: Some(summary_of(&results, advisories.len())), message: None });
+        if let Some(drive_analysis) =
+            run_drive_analysis(&app_handle, &job_id_for_task, &cancel_flag, &results, &advisories)
+        {
+            emit_storage_batches(&app_handle, &job_id_for_task, &drive_analysis.nodes);
+            emit(&app_handle, ScanJobEvent {
+                event_type: "largest_batch".to_string(),
+                job_id: job_id_for_task.clone(),
+                phase: Some(ScanPhase::Deep),
+                current: None,
+                total: None,
+                label: Some("Largest files dan folders siap.".to_string()),
+                item: None,
+                advisory: None,
+                storage_nodes: None,
+                largest_items: Some(drive_analysis.largest_items),
+                drive_summary: None,
+                summary: None,
+                message: None,
+            });
+            emit(&app_handle, ScanJobEvent {
+                event_type: "drive_summary".to_string(),
+                job_id: job_id_for_task.clone(),
+                phase: Some(ScanPhase::Diagnostics),
+                current: None,
+                total: None,
+                label: Some("Ringkasan drive siap.".to_string()),
+                item: None,
+                advisory: None,
+                storage_nodes: None,
+                largest_items: None,
+                drive_summary: Some(drive_analysis.summary),
+                summary: None,
+                message: None,
+            });
+        }
+
+        if is_cancelled(&cancel_flag) {
+            emit(&app_handle, ScanJobEvent { event_type: "cancelled".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Deep), current: None, total: None, label: None, item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: Some(summary_of(&results, advisories.len())), message: Some("Scan dibatalkan.".to_string()) });
+            if let Ok(mut jobs) = jobs.lock() { jobs.remove(&job_id_for_task); }
+            return;
+        }
+
+        emit(&app_handle, ScanJobEvent { event_type: "done".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: Some(results.len()), total: Some(target_list.len()), label: None, item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: Some(summary_of(&results, advisories.len())), message: None });
         if let Ok(mut jobs) = jobs.lock() { jobs.remove(&job_id_for_task); }
     });
 

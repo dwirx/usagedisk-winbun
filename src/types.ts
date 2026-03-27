@@ -8,6 +8,7 @@ export type Recommendation =
 export type RiskLevel = "low" | "medium" | "high";
 export type ScanMode = "quick" | "deep" | "adaptive";
 export type ScanPhase = "quick" | "deep" | "diagnostics";
+export type StorageNodeType = "drive" | "directory" | "file";
 
 export interface Target {
   id: string;
@@ -65,6 +66,48 @@ export interface AdvisoryFinding {
   scanNote?: string;
 }
 
+export interface StorageNode {
+  id: string;
+  parentId?: string;
+  path: string;
+  name: string;
+  nodeType: StorageNodeType;
+  size: number;
+  fileCount: number;
+  childCount: number;
+  depth: number;
+  category: string;
+  recommendation: Recommendation;
+  riskLevel: RiskLevel;
+  linkedTargetId?: string;
+  isKnownTarget: boolean;
+}
+
+export interface LargestItem {
+  id: string;
+  path: string;
+  name: string;
+  nodeType: Exclude<StorageNodeType, "drive">;
+  size: number;
+  category: string;
+  recommendation: Recommendation;
+  riskLevel: RiskLevel;
+  linkedTargetId?: string;
+}
+
+export interface DriveAnalysisSummary {
+  rootPath: string;
+  engineUsed: string;
+  totalBytes: number;
+  cleanableBytes: number;
+  advisoryBytes: number;
+  personalDataBytes: number;
+  virtualDiskBytes: number;
+  largeFileBytes: number;
+  nodeCount: number;
+  largestFileCount: number;
+}
+
 export type CleanVerificationStatus = "verified" | "partial" | "blocked";
 
 export interface CleanResult {
@@ -101,6 +144,9 @@ export interface ScanJobEvent {
     | "progress"
     | "target"
     | "advisory"
+    | "storage_batch"
+    | "largest_batch"
+    | "drive_summary"
     | "done"
     | "cancelled"
     | "error";
@@ -111,6 +157,9 @@ export interface ScanJobEvent {
   label?: string;
   item?: ScannedTarget;
   advisory?: AdvisoryFinding;
+  storageNodes?: StorageNode[];
+  largestItems?: LargestItem[];
+  driveSummary?: DriveAnalysisSummary;
   summary?: ScanJobSummary;
   message?: string;
 }

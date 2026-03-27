@@ -428,3 +428,30 @@ pub fn open_target_folder(id: String) -> Result<OpenFolderResult, String> {
         }),
     }
 }
+
+#[tauri::command]
+pub fn open_path(path: String) -> Result<OpenFolderResult, String> {
+    let path_buf = PathBuf::from(&path);
+    let metadata = fs::metadata(&path_buf).map_err(|error| error.to_string())?;
+
+    let result = if metadata.is_file() {
+        Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+    } else {
+        Command::new("explorer").arg(&path).spawn()
+    };
+
+    match result {
+        Ok(_) => Ok(OpenFolderResult {
+            opened: true,
+            message: "Lokasi berhasil dibuka di File Explorer.".to_string(),
+            path,
+        }),
+        Err(error) => Ok(OpenFolderResult {
+            opened: false,
+            message: error.to_string(),
+            path,
+        }),
+    }
+}

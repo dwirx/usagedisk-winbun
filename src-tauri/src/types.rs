@@ -49,6 +49,14 @@ pub enum ScanPhase {
     Diagnostics,
 }
 
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageNodeType {
+    Drive,
+    Directory,
+    File,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Target {
@@ -128,6 +136,54 @@ pub struct AdvisoryFinding {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageNode {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub path: String,
+    pub name: String,
+    pub node_type: StorageNodeType,
+    pub size: u64,
+    pub file_count: u64,
+    pub child_count: u64,
+    pub depth: u16,
+    pub category: String,
+    pub recommendation: Recommendation,
+    pub risk_level: RiskLevel,
+    pub linked_target_id: Option<String>,
+    pub is_known_target: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LargestItem {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub node_type: StorageNodeType,
+    pub size: u64,
+    pub category: String,
+    pub recommendation: Recommendation,
+    pub risk_level: RiskLevel,
+    pub linked_target_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriveAnalysisSummary {
+    pub root_path: String,
+    pub engine_used: String,
+    pub total_bytes: u64,
+    pub cleanable_bytes: u64,
+    pub advisory_bytes: u64,
+    pub personal_data_bytes: u64,
+    pub virtual_disk_bytes: u64,
+    pub large_file_bytes: u64,
+    pub node_count: usize,
+    pub largest_file_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CleanVerificationStatus {
     Verified,
@@ -181,6 +237,9 @@ pub struct ScanJobEvent {
     pub label: Option<String>,
     pub item: Option<ScannedTarget>,
     pub advisory: Option<AdvisoryFinding>,
+    pub storage_nodes: Option<Vec<StorageNode>>,
+    pub largest_items: Option<Vec<LargestItem>>,
+    pub drive_summary: Option<DriveAnalysisSummary>,
     pub summary: Option<ScanJobSummary>,
     pub message: Option<String>,
 }

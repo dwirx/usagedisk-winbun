@@ -1,6 +1,7 @@
 mod analysis;
 mod catalog;
 mod commands;
+mod drive_analysis;
 mod scan_jobs;
 mod types;
 
@@ -24,6 +25,7 @@ pub fn run() {
             commands::clean_target,
             commands::get_disk_info,
             commands::get_targets,
+            commands::open_path,
             commands::open_target_folder,
             commands::scan_target,
         ])

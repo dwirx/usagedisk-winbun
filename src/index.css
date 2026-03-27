@@ -247,6 +247,20 @@ body {
   border-radius: 99px;
   transition: width 0.35s ease;
 }
+.prog-fill-indeterminate {
+  animation: indeterminate-slide 1.6s ease-in-out infinite;
+}
+@keyframes indeterminate-slide {
+  0% {
+    margin-left: -10%;
+  }
+  50% {
+    margin-left: 45%;
+  }
+  100% {
+    margin-left: 110%;
+  }
+}
 .prog-sub {
   font-size: 11px;
   color: #475569;
@@ -395,6 +409,140 @@ body {
   border-radius: 12px;
   margin-bottom: 18px;
   padding: 14px 16px;
+}
+.analyzer-panel {
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.96), #0f172a);
+  border: 1px solid #334155;
+  border-radius: 16px;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+}
+.analyzer-summary-grid {
+  margin-top: 12px;
+}
+.analyzer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 16px;
+}
+.treemap-layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.8fr) minmax(260px, 1fr);
+}
+@media (max-width: 900px) {
+  .treemap-layout {
+    grid-template-columns: 1fr;
+  }
+}
+.treemap-board,
+.treemap-side,
+.largest-table {
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 14px;
+}
+.treemap-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.treemap-head p {
+  color: #64748b;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.treemap-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.treemap-tile {
+  align-items: flex-start;
+  background: #172033;
+  border: 1px solid #233047;
+  border-radius: 12px;
+  color: #e2e8f0;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 118px;
+  min-width: 150px;
+  padding: 14px;
+  text-align: left;
+}
+.treemap-low {
+  background: linear-gradient(160deg, rgba(34, 197, 94, 0.18), #172033);
+}
+.treemap-medium {
+  background: linear-gradient(160deg, rgba(245, 158, 11, 0.18), #172033);
+}
+.treemap-high {
+  background: linear-gradient(160deg, rgba(239, 68, 68, 0.18), #172033);
+}
+.treemap-name {
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+.treemap-size {
+  color: #93c5fd;
+  font-family: monospace;
+  font-size: 12px;
+}
+.treemap-meta {
+  color: #94a3b8;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.largest-table {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.largest-table-head,
+.largest-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1.8fr) 160px 120px 170px;
+}
+@media (max-width: 900px) {
+  .largest-table-head,
+  .largest-row {
+    grid-template-columns: 1fr;
+  }
+}
+.largest-table-head {
+  color: #64748b;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.largest-row {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 12px;
+}
+.largest-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.largest-meta strong {
+  color: #f8fafc;
+  font-size: 13px;
+}
+.largest-meta code {
+  color: #7dd3fc;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 .priority-head {
   align-items: center;

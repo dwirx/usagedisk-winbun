@@ -15,6 +15,7 @@ import {
   getTargets as getTargetsDesktop,
   isDesktopRuntime,
   listenScanEvents,
+  openPath as openPathDesktop,
   openTargetFolder as openTargetFolderDesktop,
   scanTarget as scanTargetDesktop,
   startScanJob as startScanJobDesktop,
@@ -25,12 +26,15 @@ import type {
   AdvisoryFinding,
   CleanResult,
   DiskInfo,
+  DriveAnalysisSummary,
+  LargestItem,
   Recommendation,
   RiskLevel,
   SafeLevel,
   ScanJobEvent,
   ScanPhase,
   ScannedTarget,
+  StorageNode,
   Target,
 } from "./types";
 
@@ -166,6 +170,7 @@ interface RowProps {
 type SortBy = "name" | "recommendation" | "size";
 type SafetyFilter = "all" | SafeLevel;
 type MinSizeFilter = 0 | 100 | 500 | 1024;
+type AnalyzerTab = "treemap" | "files" | "folders";
 
 const EMPTY_SCAN_SUMMARY: ScanSummary = {
   checked: 0,
@@ -210,6 +215,26 @@ function upsertScannedTarget(
   const next = items.slice();
   next[index] = incoming;
   return next;
+}
+
+function upsertStorageNodes(
+  items: StorageNode[],
+  incoming: StorageNode[],
+): StorageNode[] {
+  const next = new Map(items.map((item) => [item.id, item]));
+  for (const item of incoming) {
+    next.set(item.id, item);
+  }
+  return Array.from(next.values());
+}
+
+function tileBasis(size: number, total: number): string {
+  if (total <= 0) {
+    return "24%";
+  }
+
+  const pct = Math.max(14, Math.min(60, (size / total) * 100));
+  return `${pct}%`;
 }
 
 const DiskUsageBar = memo(function DiskUsageBar({
@@ -718,6 +743,13 @@ export default function App() {
   const [scanSummary, setScanSummary] =
     useState<ScanSummary>(EMPTY_SCAN_SUMMARY);
   const [advisories, setAdvisories] = useState<AdvisoryFinding[]>([]);
+  const [driveSummary, setDriveSummary] = useState<DriveAnalysisSummary | null>(
+    null,
+  );
+  const [storageNodes, setStorageNodes] = useState<StorageNode[]>([]);
+  const [largestItems, setLargestItems] = useState<LargestItem[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [analyzerTab, setAnalyzerTab] = useState<AnalyzerTab>("treemap");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [activeTab, setActiveTab] = useState("Semua");
@@ -784,6 +816,17 @@ export default function App() {
       setNotice(`❌ ${getErrorMessage(error, "Gagal membuka folder.")}`);
     } finally {
       setOpeningFolderId(null);
+    }
+  }, []);
+
+  const openScannedPath = useCallback(async (path: string) => {
+    try {
+      const result = await openPathDesktop(path);
+      setNotice(
+        result.opened ? `✅ ${result.message}` : `❌ ${result.message}`,
+      );
+    } catch (error) {
+      setNotice(`❌ ${getErrorMessage(error, "Gagal membuka lokasi.")}`);
     }
   }, []);
 
@@ -872,10 +915,10 @@ export default function App() {
         event.type === "done" ||
         event.type === "cancelled"
       ) {
-        setProgress({
-          current: event.current ?? 0,
-          total: event.total ?? targets.length,
-        });
+        setProgress((previous) => ({
+          current: event.current ?? previous.current,
+          total: event.total ?? (event.phase === "deep" ? 0 : previous.total),
+        }));
       }
 
       if (event.type === "target" && event.item) {
@@ -893,6 +936,27 @@ export default function App() {
               : [...previous, event.advisory!],
           );
         });
+        return;
+      }
+
+      if (event.type === "storage_batch" && event.storageNodes) {
+        startTransition(() => {
+          setStorageNodes((previous) =>
+            upsertStorageNodes(previous, event.storageNodes!),
+          );
+        });
+        return;
+      }
+
+      if (event.type === "largest_batch" && event.largestItems) {
+        startTransition(() => {
+          setLargestItems(event.largestItems!);
+        });
+        return;
+      }
+
+      if (event.type === "drive_summary" && event.driveSummary) {
+        setDriveSummary(event.driveSummary);
         return;
       }
 
@@ -952,6 +1016,11 @@ export default function App() {
     setExpanded(null);
     setResults([]);
     setAdvisories([]);
+    setDriveSummary(null);
+    setStorageNodes([]);
+    setLargestItems([]);
+    setSelectedNodeId(null);
+    setAnalyzerTab("treemap");
     setSelected(new Set());
     setProgress({ current: 0, total: targets.length });
     setScanningName("");
@@ -1065,7 +1134,7 @@ export default function App() {
   const pct =
     progress.total > 0
       ? Math.round((progress.current / progress.total) * 100)
-      : 0;
+      : null;
   const totalBloat = useMemo(
     () => results.reduce((sum, row) => sum + row.size, 0),
     [results],
@@ -1102,6 +1171,19 @@ export default function App() {
     () => advisories.reduce((sum, item) => sum + item.size, 0),
     [advisories],
   );
+  const driveNodes = useMemo(
+    () => storageNodes.filter((item) => item.nodeType !== "file"),
+    [storageNodes],
+  );
+  const largestFiles = useMemo(
+    () => largestItems.filter((item) => item.nodeType === "file").slice(0, 24),
+    [largestItems],
+  );
+  const largestFolders = useMemo(
+    () =>
+      largestItems.filter((item) => item.nodeType === "directory").slice(0, 18),
+    [largestItems],
+  );
   const minBytes = minSizeFilter === 0 ? 0 : minSizeFilter * 1024 * 1024;
   const topSafeCandidates = useMemo(
     () =>
@@ -1129,6 +1211,39 @@ export default function App() {
   );
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
+  const selectedNode = useMemo(
+    () => storageNodes.find((item) => item.id === selectedNodeId) ?? null,
+    [selectedNodeId, storageNodes],
+  );
+  const treemapNodes = useMemo(() => {
+    const currentParentId = selectedNode?.id ?? "c:\\";
+    const directChildren = driveNodes
+      .filter((item) => item.parentId === currentParentId)
+      .sort((left, right) => right.size - left.size);
+    if (directChildren.length > 0) {
+      return directChildren.slice(0, 12);
+    }
+    return largestFolders.slice(0, 12).map((item) => ({
+      id: item.id,
+      parentId: undefined,
+      path: item.path,
+      name: item.name,
+      nodeType: "directory" as const,
+      size: item.size,
+      fileCount: 0,
+      childCount: 0,
+      depth: 1,
+      category: item.category,
+      recommendation: item.recommendation,
+      riskLevel: item.riskLevel,
+      linkedTargetId: item.linkedTargetId,
+      isKnownTarget: item.linkedTargetId !== undefined,
+    }));
+  }, [driveNodes, largestFolders, selectedNode]);
+  const treemapTotal = useMemo(
+    () => treemapNodes.reduce((sum, item) => sum + item.size, 0),
+    [treemapNodes],
+  );
   const filtered = useMemo(
     () =>
       results
@@ -1314,7 +1429,11 @@ export default function App() {
                 <strong>{scanningName}</strong>
               </span>
               <div className="progress-actions">
-                <span className="prog-pct">{pct}%</span>
+                <span className="prog-pct">
+                  {pct === null
+                    ? `${formatNumber(progress.current)} item`
+                    : `${pct}%`}
+                </span>
                 {scanJobId && (
                   <button
                     className="btn-cancel-scan"
@@ -1326,10 +1445,15 @@ export default function App() {
               </div>
             </div>
             <div className="prog-track">
-              <div className="prog-fill" style={{ width: `${pct}%` }} />
+              <div
+                className={`prog-fill ${pct === null ? "prog-fill-indeterminate" : ""}`}
+                style={{ width: pct === null ? "38%" : `${pct}%` }}
+              />
             </div>
             <p className="prog-sub">
-              {progress.current} / {progress.total} item selesai diproses
+              {progress.total > 0
+                ? `${progress.current} / ${progress.total} item selesai diproses`
+                : `${formatNumber(progress.current)} folder/cluster sudah dianalisis`}
             </p>
           </div>
         )}
@@ -1420,6 +1544,198 @@ export default function App() {
               </div>
             </div>
           </div>
+        )}
+
+        {driveSummary && (
+          <section className="analyzer-panel">
+            <div className="priority-head">
+              <h3>🗺️ Analyzer Drive C</h3>
+              <span>{driveSummary.engineUsed}</span>
+            </div>
+            <div className="scan-summary-grid analyzer-summary-grid">
+              <div className="scan-chip">
+                <span>Total Terindeks</span>
+                <strong>{formatBytes(driveSummary.totalBytes)}</strong>
+              </div>
+              <div className="scan-chip">
+                <span>Cleanable</span>
+                <strong>{formatBytes(driveSummary.cleanableBytes)}</strong>
+              </div>
+              <div className="scan-chip">
+                <span>Personal Data</span>
+                <strong>{formatBytes(driveSummary.personalDataBytes)}</strong>
+              </div>
+              <div className="scan-chip">
+                <span>Virtual Disk</span>
+                <strong>{formatBytes(driveSummary.virtualDiskBytes)}</strong>
+              </div>
+              <div className="scan-chip">
+                <span>Large Files</span>
+                <strong>{formatBytes(driveSummary.largeFileBytes)}</strong>
+              </div>
+              <div className="scan-chip">
+                <span>Node Tertangkap</span>
+                <strong>{formatNumber(driveSummary.nodeCount)}</strong>
+              </div>
+            </div>
+
+            <div className="analyzer-tabs">
+              {(
+                [
+                  ["treemap", "Treemap"],
+                  ["files", "Largest Files"],
+                  ["folders", "Largest Folders"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={`sort-btn ${analyzerTab === value ? "sort-active" : ""}`}
+                  onClick={() => setAnalyzerTab(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {analyzerTab === "treemap" && (
+              <div className="treemap-layout">
+                <div className="treemap-board">
+                  <div className="treemap-head">
+                    <div>
+                      <strong>
+                        {selectedNode
+                          ? selectedNode.name
+                          : driveSummary.rootPath}
+                      </strong>
+                      <p>
+                        {selectedNode
+                          ? selectedNode.path
+                          : "Klik tile untuk drill-down ke folder besar."}
+                      </p>
+                    </div>
+                    {selectedNode && (
+                      <button
+                        className="sort-btn"
+                        onClick={() => setSelectedNodeId(null)}
+                      >
+                        Kembali ke Root
+                      </button>
+                    )}
+                  </div>
+                  <div className="treemap-grid">
+                    {treemapNodes.map((item) => (
+                      <button
+                        key={item.id}
+                        className={`treemap-tile treemap-${item.riskLevel}`}
+                        style={{
+                          flexBasis: tileBasis(item.size, treemapTotal),
+                        }}
+                        onClick={() => setSelectedNodeId(item.id)}
+                      >
+                        <span className="treemap-name">{item.name}</span>
+                        <span className="treemap-size">
+                          {formatBytes(item.size)}
+                        </span>
+                        <span className="treemap-meta">
+                          {item.category} ·{" "}
+                          {RECOMMENDATION_MAP[item.recommendation].label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="treemap-side">
+                  <div className="detail-block">
+                    <div className="detail-lbl">Node Terpilih</div>
+                    {selectedNode ? (
+                      <>
+                        <code className="detail-path">{selectedNode.path}</code>
+                        <p className="detail-txt">
+                          {selectedNode.category} ·{" "}
+                          {formatBytes(selectedNode.size)} ·{" "}
+                          {formatNumber(selectedNode.fileCount)} file
+                        </p>
+                        <div className="detail-actions">
+                          <button
+                            className="btn-open-folder"
+                            onClick={() =>
+                              void openScannedPath(selectedNode.path)
+                            }
+                          >
+                            📂 Buka Lokasi
+                          </button>
+                          {selectedNode.linkedTargetId && (
+                            <button
+                              className="btn-quick-clean"
+                              onClick={() => {
+                                if (selectedNode.linkedTargetId) {
+                                  selectOneSafe(selectedNode.linkedTargetId);
+                                }
+                              }}
+                            >
+                              🧹 Masuk ke Cleaner
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="detail-txt">
+                        Pilih salah satu tile untuk melihat detail folder besar
+                        dan memasukkannya ke cleaner bila terhubung ke target
+                        aman.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {analyzerTab !== "treemap" && (
+              <div className="largest-table">
+                <div className="largest-table-head">
+                  <span>Nama</span>
+                  <span>Kategori</span>
+                  <span>Ukuran</span>
+                  <span>Aksi</span>
+                </div>
+                {(analyzerTab === "files" ? largestFiles : largestFolders).map(
+                  (item) => (
+                    <div key={item.id} className="largest-row">
+                      <div className="largest-meta">
+                        <strong>{item.name}</strong>
+                        <code>{item.path}</code>
+                      </div>
+                      <span>{item.category}</span>
+                      <span className="priority-size">
+                        {formatBytes(item.size)}
+                      </span>
+                      <div className="detail-actions">
+                        <button
+                          className="sort-btn"
+                          onClick={() => void openScannedPath(item.path)}
+                        >
+                          Buka
+                        </button>
+                        {item.linkedTargetId && (
+                          <button
+                            className="sort-btn"
+                            onClick={() => {
+                              if (item.linkedTargetId) {
+                                selectOneSafe(item.linkedTargetId);
+                              }
+                            }}
+                          >
+                            Cleaner
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ),
+                )}
+              </div>
+            )}
+          </section>
         )}
 
         {done && topSafeCandidates.length > 0 && (

@@ -92,3 +92,7 @@ export function openTargetFolder(id: string): Promise<OpenFolderResult> {
     }),
   );
 }
+
+export function openPath(path: string): Promise<OpenFolderResult> {
+  return invoke<OpenFolderResult>("open_path", { path });
+}
