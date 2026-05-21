@@ -20,6 +20,8 @@ Dibangun menggunakan teknologi terkini:
 - **Progress Cleaning Streaming**: Proses pembersihan tampil realtime per target, termasuk hasil file terhapus dan ruang yang berhasil dibebaskan.
 - **Buka Folder Langsung**: Tiap item bisa dibuka langsung di File Explorer dari UI.
 - **Filter Analisis Detail**: Tersedia pencarian, filter status keamanan, filter ukuran minimum, dan panel prioritas aman terbesar.
+- **Mode Scan WizTree**: Desktop build dapat memakai `wiztree_4_31_portable/WizTree64.exe` untuk export MFT cepat, bisa memilih EXE sendiri, atau mengunduh portable resmi jika belum tersedia.
+- **Export Metafile & Cleanup Report**: Hasil scan dapat diekspor sebagai `metafile.json` kompatibel esbuild analyzer, plus report prioritas cleanup untuk review manual.
 - **Zero Configuration Build**: Bun mengompilasi TypeScript dan React (JSX/TSX) secara instan.
 
 ## 🛠 Prerequisites
@@ -46,7 +48,20 @@ bun start
 
 Aplikasi akan berjalan secara otomatis di `http://localhost:3000`.
 
-### 3. Quality Control (Cek Kode)
+### 3. Build Desktop Tauri
+
+Untuk membuat installer Windows:
+
+```bash
+bun run desktop:build
+```
+
+Output build ada di:
+
+- `src-tauri/target/release/bundle/nsis/usagedisk_0.1.0_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/usagedisk_0.1.0_x64_en-US.msi`
+
+### 4. Quality Control (Cek Kode)
 
 Template ini dilengkapi dengan pengecekan kode yang sangat cepat di `package.json`:
 

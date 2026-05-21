@@ -9,6 +9,7 @@ import type {
   ScanMode,
   ScannedTarget,
   Target,
+  WizTreeStatus,
 } from "./types";
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -95,4 +96,21 @@ export function openTargetFolder(id: string): Promise<OpenFolderResult> {
 
 export function openPath(path: string): Promise<OpenFolderResult> {
   return invoke<OpenFolderResult>("open_path", { path });
+}
+
+export function getWizTreeStatus(): Promise<WizTreeStatus> {
+  return invokeOrFallback("get_wiztree_status", {}, async () => ({
+    available: false,
+    canDownload: false,
+    message: "Manajemen WizTree hanya tersedia di desktop build Tauri.",
+    source: "browser",
+  }));
+}
+
+export function pickWizTreeExe(): Promise<WizTreeStatus> {
+  return invoke<WizTreeStatus>("pick_wiztree_exe");
+}
+
+export function downloadWizTree(): Promise<WizTreeStatus> {
+  return invoke<WizTreeStatus>("download_wiztree");
 }

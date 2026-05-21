@@ -6,7 +6,7 @@ export type Recommendation =
   | "manual_only"
   | "unavailable";
 export type RiskLevel = "low" | "medium" | "high";
-export type ScanMode = "quick" | "deep" | "adaptive";
+export type ScanMode = "quick" | "deep" | "adaptive" | "wiztree";
 export type ScanPhase = "quick" | "deep" | "diagnostics";
 export type StorageNodeType = "drive" | "directory" | "file";
 
@@ -130,6 +130,14 @@ export interface OpenFolderResult {
   opened: boolean;
   message: string;
   path: string;
+}
+
+export interface WizTreeStatus {
+  available: boolean;
+  path?: string;
+  source: string;
+  message: string;
+  canDownload: boolean;
 }
 
 export interface ScanJobSummary {

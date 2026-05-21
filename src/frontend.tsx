@@ -11,12 +11,15 @@ import { createRoot } from "react-dom/client";
 import {
   cancelScanJob as cancelScanJobDesktop,
   cleanTarget as cleanTargetDesktop,
+  downloadWizTree as downloadWizTreeDesktop,
   getDiskInfo as getDiskInfoDesktop,
   getTargets as getTargetsDesktop,
+  getWizTreeStatus as getWizTreeStatusDesktop,
   isDesktopRuntime,
   listenScanEvents,
   openPath as openPathDesktop,
   openTargetFolder as openTargetFolderDesktop,
+  pickWizTreeExe as pickWizTreeExeDesktop,
   scanTarget as scanTargetDesktop,
   startScanJob as startScanJobDesktop,
 } from "./desktop-api";
@@ -32,10 +35,12 @@ import type {
   RiskLevel,
   SafeLevel,
   ScanJobEvent,
+  ScanMode,
   ScanPhase,
   ScannedTarget,
   StorageNode,
   Target,
+  WizTreeStatus,
 } from "./types";
 
 function formatBytes(bytes: number, decimals = 1): string {
@@ -172,6 +177,47 @@ type SafetyFilter = "all" | SafeLevel;
 type MinSizeFilter = 0 | 100 | 500 | 1024;
 type AnalyzerTab = "treemap" | "files" | "folders";
 
+interface ScanTimelineItem {
+  id: string;
+  phase: ScanPhase;
+  text: string;
+  type: ScanJobEvent["type"];
+  at: number;
+}
+
+interface EsbuildMetafile {
+  inputs: Record<string, { bytes: number; imports: [] }>;
+  outputs: Record<
+    string,
+    {
+      bytes: number;
+      inputs: Record<string, { bytesInOutput: number }>;
+    }
+  >;
+}
+
+interface CleanupReport {
+  generatedAt: string;
+  summary: {
+    totalDetectedBytes: number;
+    cleanableBytes: number;
+    reviewBytes: number;
+    advisoryBytes: number;
+    scannedTargets: number;
+    cleanableTargets: number;
+    reviewTargets: number;
+    manualTargets: number;
+    unavailableTargets: number;
+  };
+  driveSummary: DriveAnalysisSummary | null;
+  cleanableTargets: ScannedTarget[];
+  reviewTargets: ScannedTarget[];
+  manualTargets: ScannedTarget[];
+  unavailableTargets: ScannedTarget[];
+  advisories: AdvisoryFinding[];
+  largestItems: LargestItem[];
+}
+
 const EMPTY_SCAN_SUMMARY: ScanSummary = {
   checked: 0,
   found: 0,
@@ -187,6 +233,41 @@ const SCAN_PHASE_LABEL: Record<ScanPhase, string> = {
   quick: "Quick Scan",
   deep: "Deep Scan",
   diagnostics: "Diagnostics",
+};
+const MAX_SCAN_TIMELINE = 8;
+
+const SCAN_MODE_OPTIONS: Array<{
+  mode: ScanMode;
+  label: string;
+  hint: string;
+}> = [
+  {
+    mode: "wiztree",
+    label: "WizTree",
+    hint: "MFT export tercepat bila portable tersedia",
+  },
+  {
+    mode: "adaptive",
+    label: "Adaptive",
+    hint: "Scanner internal dengan cache analyzer",
+  },
+  {
+    mode: "quick",
+    label: "Quick",
+    hint: "Estimasi ringan untuk target dikenal",
+  },
+];
+
+const WIZTREE_SOURCE_LABEL: Record<string, string> = {
+  app_dir: "Folder app",
+  browser: "Browser",
+  bundled: "Bundled",
+  downloaded: "Downloaded",
+  env: "Environment",
+  missing: "Belum ada",
+  resource: "Resource",
+  selected: "Pilihan user",
+  workspace: "Workspace",
 };
 
 function shouldShowTarget(item: ScannedTarget): boolean {
@@ -226,6 +307,112 @@ function upsertStorageNodes(
     next.set(item.id, item);
   }
   return Array.from(next.values());
+}
+
+function appendScanTimeline(
+  previous: ScanTimelineItem[],
+  event: ScanJobEvent,
+): ScanTimelineItem[] {
+  const text = event.message ?? event.label;
+  if (!text) {
+    return previous;
+  }
+
+  const last = previous.at(-1);
+  if (last?.text === text && last.type === event.type) {
+    return previous;
+  }
+
+  const at = Date.now();
+  const next = [
+    ...previous,
+    {
+      at,
+      id: `${event.jobId}-${event.type}-${at}-${previous.length}`,
+      phase: event.phase ?? "quick",
+      text,
+      type: event.type,
+    },
+  ];
+
+  return next.slice(-MAX_SCAN_TIMELINE);
+}
+
+function normalizeMetafilePath(path: string): string {
+  const normalized = path
+    .replaceAll("\\", "/")
+    .replace(/^([A-Za-z]):\//, "$1/");
+  return `drive-c/${normalized.replace(/^C\//i, "")}`;
+}
+
+function metafilePathForNode(node: StorageNode): string {
+  const base = normalizeMetafilePath(node.path);
+  if (node.nodeType === "file") {
+    return base;
+  }
+  return `${base.replace(/\/$/, "")}/.folder-size`;
+}
+
+function metafilePathForTarget(target: ScannedTarget): string {
+  return `${normalizeMetafilePath(target.path).replace(/\/$/, "")}/.target-size`;
+}
+
+function buildMetafile(
+  storageNodes: StorageNode[],
+  results: ScannedTarget[],
+): EsbuildMetafile {
+  const parentIds = new Set(
+    storageNodes
+      .map((item) => item.parentId)
+      .filter((item): item is string => typeof item === "string"),
+  );
+  const sourceNodes = storageNodes
+    .filter((item) => item.nodeType !== "drive")
+    .filter((item) => item.size > 0)
+    .filter((item) => !parentIds.has(item.id));
+  const inputs: EsbuildMetafile["inputs"] = {};
+  const outputInputs: EsbuildMetafile["outputs"][string]["inputs"] = {};
+
+  if (sourceNodes.length > 0) {
+    for (const node of sourceNodes) {
+      const path = metafilePathForNode(node);
+      inputs[path] = { bytes: node.size, imports: [] };
+      outputInputs[path] = { bytesInOutput: node.size };
+    }
+  } else {
+    for (const item of results.filter((row) => row.size > 0)) {
+      const path = metafilePathForTarget(item);
+      inputs[path] = { bytes: item.size, imports: [] };
+      outputInputs[path] = { bytesInOutput: item.size };
+    }
+  }
+
+  return {
+    inputs,
+    outputs: {
+      "drive-c-analysis": {
+        bytes: Object.values(outputInputs).reduce(
+          (sum, item) => sum + item.bytesInOutput,
+          0,
+        ),
+        inputs: outputInputs,
+      },
+    },
+  };
+}
+
+function downloadJson(filename: string, payload: unknown): void {
+  const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
+    type: "application/json;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
 }
 
 function tileBasis(size: number, total: number): string {
@@ -736,10 +923,16 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const [scanning, setScanning] = useState(false);
+  const [scanMode, setScanMode] = useState<ScanMode>("wiztree");
+  const [wizTreeStatus, setWizTreeStatus] = useState<WizTreeStatus | null>(
+    null,
+  );
+  const [wizTreeBusy, setWizTreeBusy] = useState(false);
   const [scanJobId, setScanJobId] = useState<string | null>(null);
   const [scanPhase, setScanPhase] = useState<ScanPhase>("quick");
   const [progress, setProgress] = useState({ current: 0, total: 1 });
   const [scanningName, setScanningName] = useState("");
+  const [scanTimeline, setScanTimeline] = useState<ScanTimelineItem[]>([]);
   const [scanSummary, setScanSummary] =
     useState<ScanSummary>(EMPTY_SCAN_SUMMARY);
   const [advisories, setAdvisories] = useState<AdvisoryFinding[]>([]);
@@ -803,6 +996,59 @@ export default function App() {
     }
   }, []);
 
+  const refreshWizTreeStatus = useCallback(async () => {
+    try {
+      const status = await getWizTreeStatusDesktop();
+      setWizTreeStatus(status);
+      if (status.available) {
+        return;
+      }
+      setScanMode((previous) =>
+        previous === "wiztree" ? "adaptive" : previous,
+      );
+    } catch (error) {
+      setWizTreeStatus({
+        available: false,
+        canDownload: false,
+        message: getErrorMessage(error, "Gagal membaca status WizTree."),
+        source: "error",
+      });
+    }
+  }, []);
+
+  const chooseWizTree = useCallback(async () => {
+    setWizTreeBusy(true);
+    try {
+      const status = await pickWizTreeExeDesktop();
+      setWizTreeStatus(status);
+      if (status.available) {
+        setScanMode("wiztree");
+      }
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(getErrorMessage(error, "Gagal memilih WizTree."));
+    } finally {
+      setWizTreeBusy(false);
+    }
+  }, []);
+
+  const downloadWizTree = useCallback(async () => {
+    setWizTreeBusy(true);
+    setNotice("Mengunduh WizTree portable dari situs resmi...");
+    try {
+      const status = await downloadWizTreeDesktop();
+      setWizTreeStatus(status);
+      if (status.available) {
+        setScanMode("wiztree");
+      }
+      setNotice(status.message);
+    } catch (error) {
+      setNotice(getErrorMessage(error, "Download WizTree gagal."));
+    } finally {
+      setWizTreeBusy(false);
+    }
+  }, []);
+
   const openFolder = useCallback(async (targetId: string) => {
     setOpeningFolderId(targetId);
     try {
@@ -841,10 +1087,11 @@ export default function App() {
         );
       }
       await refreshDisk();
+      await refreshWizTreeStatus();
     };
 
     void loadInitial();
-  }, [refreshDisk]);
+  }, [refreshDisk, refreshWizTreeStatus]);
 
   const runLegacyScan = useCallback(async () => {
     const nextSummary: ScanSummary = {
@@ -907,6 +1154,16 @@ export default function App() {
 
       if (event.label) {
         setScanningName(event.label);
+      }
+
+      if (event.label || event.message || event.type === "done") {
+        const timelineEvent =
+          event.type === "done" && !event.label && !event.message
+            ? { ...event, label: "Scan selesai dan hasil siap direview" }
+            : event;
+        setScanTimeline((previous) =>
+          appendScanTimeline(previous, timelineEvent),
+        );
       }
 
       if (
@@ -1007,6 +1264,12 @@ export default function App() {
       setNotice("Daftar target belum tersedia, coba beberapa detik lagi.");
       return;
     }
+    if (scanMode === "wiztree" && wizTreeStatus?.available === false) {
+      setNotice(
+        "WizTree belum siap. Pilih executable, download portable, atau pakai Adaptive.",
+      );
+      return;
+    }
 
     setNotice(null);
     setScanning(true);
@@ -1024,6 +1287,7 @@ export default function App() {
     setSelected(new Set());
     setProgress({ current: 0, total: targets.length });
     setScanningName("");
+    setScanTimeline([]);
     setScanSummary({
       ...EMPTY_SCAN_SUMMARY,
       startedAt: Date.now(),
@@ -1054,7 +1318,7 @@ export default function App() {
     });
 
     try {
-      const jobId = await startScanJobDesktop("adaptive");
+      const jobId = await startScanJobDesktop(scanMode);
       currentJobId = jobId;
       setScanJobId(jobId);
     } catch (error) {
@@ -1065,7 +1329,13 @@ export default function App() {
       );
       await runLegacyScan();
     }
-  }, [applyScanEvent, runLegacyScan, targets.length]);
+  }, [
+    applyScanEvent,
+    runLegacyScan,
+    scanMode,
+    targets.length,
+    wizTreeStatus?.available,
+  ]);
 
   const cancelCurrentScan = useCallback(async () => {
     if (!scanJobId) {
@@ -1133,8 +1403,15 @@ export default function App() {
 
   const pct =
     progress.total > 0
-      ? Math.round((progress.current / progress.total) * 100)
+      ? Math.min(
+          100,
+          Math.max(0, Math.round((progress.current / progress.total) * 100)),
+        )
       : null;
+  const progressDetail =
+    progress.total > 0
+      ? `${progress.current} / ${progress.total} item selesai diproses`
+      : "WizTree sedang menyiapkan CSV; indikator bergerak sampai data siap diproses";
   const totalBloat = useMemo(
     () => results.reduce((sum, row) => sum + row.size, 0),
     [results],
@@ -1327,6 +1604,71 @@ export default function App() {
   const selectedItems = safeItems.filter((item) => selected.has(item.id));
   const selectedSize = selectedItems.reduce((sum, item) => sum + item.size, 0);
 
+  const exportStamp = useCallback(() => {
+    return new Date().toISOString().replaceAll(":", "-").replace(/\..+$/, "");
+  }, []);
+
+  const exportMetafile = useCallback(() => {
+    const metafile = buildMetafile(storageNodes, results);
+    const inputCount = Object.keys(metafile.inputs).length;
+
+    if (inputCount === 0) {
+      setNotice("Belum ada data ukuran yang bisa diekspor.");
+      return;
+    }
+
+    downloadJson(`usagedisk-metafile-${exportStamp()}.json`, metafile);
+    setNotice(
+      `Metafile diekspor. Upload JSON ini ke esbuild Bundle Size Analyzer untuk sunburst view.`,
+    );
+  }, [exportStamp, results, storageNodes]);
+
+  const exportCleanupReport = useCallback(() => {
+    if (results.length === 0 && advisories.length === 0) {
+      setNotice("Belum ada hasil scan yang bisa diekspor.");
+      return;
+    }
+
+    const report: CleanupReport = {
+      generatedAt: new Date().toISOString(),
+      summary: {
+        totalDetectedBytes: totalBloat,
+        cleanableBytes: safeToFree,
+        reviewBytes: reviewToFree,
+        advisoryBytes,
+        scannedTargets: results.length,
+        cleanableTargets: safeItems.length,
+        reviewTargets: reviewItems.length,
+        manualTargets: manualItems.length,
+        unavailableTargets: unavailableItems.length,
+      },
+      driveSummary,
+      cleanableTargets: safeItems,
+      reviewTargets: reviewItems,
+      manualTargets: manualItems,
+      unavailableTargets: unavailableItems,
+      advisories,
+      largestItems,
+    };
+
+    downloadJson(`usagedisk-cleanup-report-${exportStamp()}.json`, report);
+    setNotice("Cleanup report diekspor untuk review manual.");
+  }, [
+    advisories,
+    advisoryBytes,
+    driveSummary,
+    exportStamp,
+    largestItems,
+    manualItems,
+    results.length,
+    reviewItems,
+    reviewToFree,
+    safeItems,
+    safeToFree,
+    totalBloat,
+    unavailableItems,
+  ]);
+
   const diag = (() => {
     if (!done) {
       return null;
@@ -1406,6 +1748,78 @@ export default function App() {
       </header>
 
       <main className="main">
+        <section className="scan-mode-panel">
+          <div className="scan-mode-copy">
+            <h3>Mode Scan</h3>
+            <p>
+              {wizTreeStatus?.message ?? "Memeriksa status WizTree portable..."}
+            </p>
+            <div className="wiztree-status-row">
+              <span
+                className={`wiztree-dot ${
+                  wizTreeStatus?.available ? "wiztree-ready" : "wiztree-missing"
+                }`}
+              />
+              <span>
+                {wizTreeStatus?.available ? "Siap" : "Belum siap"} ·{" "}
+                {WIZTREE_SOURCE_LABEL[wizTreeStatus?.source ?? "missing"] ??
+                  wizTreeStatus?.source ??
+                  "Belum ada"}
+              </span>
+              {wizTreeStatus?.path && <code>{wizTreeStatus.path}</code>}
+            </div>
+          </div>
+          <div className="scan-mode-stack">
+            <div className="scan-mode-options">
+              {SCAN_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option.mode}
+                  className={`scan-mode-btn ${
+                    scanMode === option.mode ? "scan-mode-active" : ""
+                  }`}
+                  disabled={
+                    scanning ||
+                    (option.mode === "wiztree" &&
+                      wizTreeStatus?.available === false)
+                  }
+                  onClick={() => setScanMode(option.mode)}
+                  title={option.hint}
+                >
+                  <span>{option.label}</span>
+                  <small>{option.hint}</small>
+                </button>
+              ))}
+            </div>
+            <div className="wiztree-actions">
+              <button
+                className="sort-btn"
+                disabled={scanning || wizTreeBusy}
+                onClick={() => void refreshWizTreeStatus()}
+              >
+                Refresh
+              </button>
+              <button
+                className="sort-btn"
+                disabled={scanning || wizTreeBusy}
+                onClick={() => void chooseWizTree()}
+              >
+                Pilih EXE
+              </button>
+              <button
+                className="sort-btn sort-active"
+                disabled={
+                  scanning ||
+                  wizTreeBusy ||
+                  wizTreeStatus?.canDownload === false
+                }
+                onClick={() => void downloadWizTree()}
+              >
+                {wizTreeBusy ? "Memproses..." : "Download WizTree"}
+              </button>
+            </div>
+          </div>
+        </section>
+
         {notice && (
           <div className="notice notice-warn">
             <strong>Catatan:</strong> {notice}
@@ -1426,7 +1840,7 @@ export default function App() {
               <span className="progress-title">
                 <strong>{SCAN_PHASE_LABEL[scanPhase]}</strong>
                 <span className="progress-divider">·</span>🔎 Menganalisis:{" "}
-                <strong>{scanningName}</strong>
+                <strong>{scanningName || "Menyiapkan scan"}</strong>
               </span>
               <div className="progress-actions">
                 <span className="prog-pct">
@@ -1450,11 +1864,31 @@ export default function App() {
                 style={{ width: pct === null ? "38%" : `${pct}%` }}
               />
             </div>
-            <p className="prog-sub">
-              {progress.total > 0
-                ? `${progress.current} / ${progress.total} item selesai diproses`
-                : `${formatNumber(progress.current)} folder/cluster sudah dianalisis`}
-            </p>
+            <p className="prog-sub">{progressDetail}</p>
+            <div className="progress-meta-grid">
+              <span>
+                Engine <strong>{scanMode}</strong>
+              </span>
+              <span>
+                Phase <strong>{SCAN_PHASE_LABEL[scanPhase]}</strong>
+              </span>
+              <span>
+                Target <strong>{formatNumber(targets.length)}</strong>
+              </span>
+            </div>
+            {scanTimeline.length > 0 && (
+              <div className="progress-timeline" aria-label="Detail scan">
+                {scanTimeline.map((item) => (
+                  <div
+                    key={item.id}
+                    className={`scan-step scan-step-${item.type}`}
+                  >
+                    <span>{SCAN_PHASE_LABEL[item.phase]}</span>
+                    <strong>{item.text}</strong>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -1508,6 +1942,34 @@ export default function App() {
               </p>
             )}
           </div>
+        )}
+
+        {done && (results.length > 0 || advisories.length > 0) && (
+          <section className="export-panel">
+            <div className="export-copy">
+              <h3>Export Analisis</h3>
+              <p>
+                Metafile kompatibel esbuild analyzer. Cleanup report menyimpan
+                prioritas, advisory, dan daftar target untuk audit manual.
+              </p>
+            </div>
+            <div className="export-actions">
+              <button className="sort-btn sort-active" onClick={exportMetafile}>
+                Export Metafile
+              </button>
+              <button className="sort-btn" onClick={exportCleanupReport}>
+                Export Cleanup Report
+              </button>
+              <a
+                className="sort-btn export-link"
+                href="https://esbuild.github.io/analyze/"
+                rel="noreferrer"
+                target="_blank"
+              >
+                Buka Analyzer
+              </a>
+            </div>
+          </section>
         )}
 
         {(results.length > 0 || advisories.length > 0) && (

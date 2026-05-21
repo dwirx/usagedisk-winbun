@@ -39,6 +39,7 @@ pub enum ScanMode {
     Quick,
     Deep,
     Adaptive,
+    Wiztree,
 }
 
 #[derive(Clone, Debug, Serialize, Eq, PartialEq)]

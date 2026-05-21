@@ -104,7 +104,9 @@ pub fn load_cached_drive_analysis() -> Option<DriveAnalysisResult> {
 }
 
 pub fn cache_age_seconds(summary: &DriveAnalysisSummary) -> Option<u64> {
-    summary.last_indexed_at.map(|saved_at| unix_now().saturating_sub(saved_at))
+    summary
+        .last_indexed_at
+        .map(|saved_at| unix_now().saturating_sub(saved_at))
 }
 
 pub fn should_refresh_cache(summary: &DriveAnalysisSummary) -> bool {
@@ -162,7 +164,9 @@ fn build_user_roots() -> Vec<String> {
 }
 
 fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
 }
 
 fn path_id(path: &Path) -> String {
@@ -661,9 +665,12 @@ pub fn run_drive_analysis(
         is_known_target: false,
     });
 
-    state
-        .nodes
-        .sort_by(|left, right| right.size.cmp(&left.size).then(left.depth.cmp(&right.depth)));
+    state.nodes.sort_by(|left, right| {
+        right
+            .size
+            .cmp(&left.size)
+            .then(left.depth.cmp(&right.depth))
+    });
 
     let advisory_bytes = advisories.iter().map(|item| item.size).sum::<u64>();
     let cleanable_bytes = known_results

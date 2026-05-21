@@ -4,6 +4,7 @@ mod commands;
 mod drive_analysis;
 mod scan_jobs;
 mod types;
+mod wiztree;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -23,10 +24,13 @@ pub fn run() {
             scan_jobs::cancel_scan,
             scan_jobs::start_scan,
             commands::clean_target,
+            commands::download_wiztree,
             commands::get_disk_info,
             commands::get_targets,
+            commands::get_wiztree_status,
             commands::open_path,
             commands::open_target_folder,
+            commands::pick_wiztree_exe,
             commands::scan_target,
         ])
         .run(tauri::generate_context!())

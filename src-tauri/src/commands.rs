@@ -5,9 +5,14 @@ use std::process::Command;
 use crate::analysis::{build_scan_assessment, can_auto_clean};
 use crate::catalog::{target_by_id, targets};
 use crate::types::{
-    AvailabilityStatus, CleanResult, CleanVerificationStatus, DiskInfo, OpenFolderResult,
-    ScanMode, ScannedTarget, Target,
+    AvailabilityStatus, CleanResult, CleanVerificationStatus, DiskInfo, OpenFolderResult, ScanMode,
+    ScannedTarget, Target,
 };
+use crate::wiztree::{
+    download_wiztree as download_wiztree_impl, get_wiztree_status as get_wiztree_status_impl,
+    pick_wiztree_exe as pick_wiztree_exe_impl, WizTreeStatus,
+};
+use tauri::AppHandle;
 
 struct SizeScanResult {
     size: u64,
@@ -435,9 +440,7 @@ pub fn open_path(path: String) -> Result<OpenFolderResult, String> {
     let metadata = fs::metadata(&path_buf).map_err(|error| error.to_string())?;
 
     let result = if metadata.is_file() {
-        Command::new("explorer")
-            .args(["/select,", &path])
-            .spawn()
+        Command::new("explorer").args(["/select,", &path]).spawn()
     } else {
         Command::new("explorer").arg(&path).spawn()
     };
@@ -454,4 +457,21 @@ pub fn open_path(path: String) -> Result<OpenFolderResult, String> {
             path,
         }),
     }
+}
+
+#[tauri::command]
+pub fn get_wiztree_status(app: AppHandle) -> WizTreeStatus {
+    get_wiztree_status_impl(&app)
+}
+
+#[tauri::command]
+pub fn pick_wiztree_exe(app: AppHandle) -> Result<WizTreeStatus, String> {
+    pick_wiztree_exe_impl(&app)
+}
+
+#[tauri::command]
+pub async fn download_wiztree(app: AppHandle) -> Result<WizTreeStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || download_wiztree_impl(&app))
+        .await
+        .map_err(|error| error.to_string())?
 }
