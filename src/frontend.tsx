@@ -1550,7 +1550,9 @@ export default function App() {
           <section className="analyzer-panel">
             <div className="priority-head">
               <h3>🗺️ Analyzer Drive C</h3>
-              <span>{driveSummary.engineUsed}</span>
+              <span>
+                {driveSummary.engineUsed} · {driveSummary.cacheState}
+              </span>
             </div>
             <div className="scan-summary-grid analyzer-summary-grid">
               <div className="scan-chip">
@@ -1577,7 +1579,19 @@ export default function App() {
                 <span>Node Tertangkap</span>
                 <strong>{formatNumber(driveSummary.nodeCount)}</strong>
               </div>
+              <div className="scan-chip">
+                <span>Admin Accel</span>
+                <strong>
+                  {driveSummary.adminAcceleration ? "Aktif" : "Fallback"}
+                </strong>
+              </div>
             </div>
+            {driveSummary.lastIndexedAt && (
+              <p className="scan-summary-time">
+                Index terakhir:{" "}
+                {formatDateTime(driveSummary.lastIndexedAt * 1000)}
+              </p>
+            )}
 
             <div className="analyzer-tabs">
               {(

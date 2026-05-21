@@ -98,6 +98,9 @@ export interface LargestItem {
 export interface DriveAnalysisSummary {
   rootPath: string;
   engineUsed: string;
+  cacheState: string;
+  adminAcceleration: boolean;
+  lastIndexedAt?: number;
   totalBytes: number;
   cleanableBytes: number;
   advisoryBytes: number;

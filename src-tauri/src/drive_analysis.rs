@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 use crate::types::{
@@ -15,6 +17,23 @@ const LARGE_FOLDER_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
 const LARGE_FILE_THRESHOLD_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_CAPTURED_NODES: usize = 1600;
 const MAX_LARGEST_ITEMS: usize = 140;
+const DEFAULT_SHALLOW_DEPTH: u16 = 2;
+const WINDOWS_DEPTH: u16 = 3;
+const USERS_DEPTH: u16 = 5;
+const PROGRAM_DATA_DEPTH: u16 = 4;
+const CACHE_TTL_SECONDS: u64 = 300;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct DriveAnalysisCache {
+    version: u8,
+    saved_at: u64,
+    result: DriveAnalysisResult,
+}
+
+struct RootScanPlan {
+    path: PathBuf,
+    max_depth: u16,
+}
 
 struct WalkStats {
     size: u64,
@@ -33,6 +52,7 @@ struct WalkState {
     user_roots: Vec<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DriveAnalysisResult {
     pub summary: DriveAnalysisSummary,
     pub nodes: Vec<StorageNode>,
@@ -51,6 +71,82 @@ impl WalkState {
             large_file_bytes: 0,
             user_roots: build_user_roots(),
         }
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs()
+}
+
+fn cache_path() -> Option<PathBuf> {
+    let base = dirs::cache_dir()?;
+    Some(base.join("usagedisk").join("drive-analysis-cache.json"))
+}
+
+pub fn load_cached_drive_analysis() -> Option<DriveAnalysisResult> {
+    let cache_path = cache_path()?;
+    let raw = fs::read_to_string(cache_path).ok()?;
+    let cache = serde_json::from_str::<DriveAnalysisCache>(&raw).ok()?;
+    if cache.version != 1 {
+        return None;
+    }
+    let mut result = cache.result;
+    result.summary.engine_used = "incremental_cache".to_string();
+    result.summary.cache_state = "warm".to_string();
+    result.summary.admin_acceleration = has_admin_acceleration();
+    if result.summary.last_indexed_at.is_none() {
+        result.summary.last_indexed_at = Some(cache.saved_at);
+    }
+    Some(result)
+}
+
+pub fn cache_age_seconds(summary: &DriveAnalysisSummary) -> Option<u64> {
+    summary.last_indexed_at.map(|saved_at| unix_now().saturating_sub(saved_at))
+}
+
+pub fn should_refresh_cache(summary: &DriveAnalysisSummary) -> bool {
+    match cache_age_seconds(summary) {
+        Some(age) => age > CACHE_TTL_SECONDS,
+        None => true,
+    }
+}
+
+pub fn save_cached_drive_analysis(result: &DriveAnalysisResult) -> Result<(), String> {
+    let Some(cache_path) = cache_path() else {
+        return Err("cache directory tidak tersedia".to_string());
+    };
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let payload = serde_json::to_string(&DriveAnalysisCache {
+        version: 1,
+        saved_at: unix_now(),
+        result: result.clone(),
+    })
+    .map_err(|error| error.to_string())?;
+
+    fs::write(cache_path, payload).map_err(|error| error.to_string())
+}
+
+pub fn has_admin_acceleration() -> bool {
+    let status = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)",
+        ])
+        .output();
+
+    match status {
+        Ok(output) => String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .eq_ignore_ascii_case("true"),
+        Err(_) => false,
     }
 }
 
@@ -207,9 +303,46 @@ fn emit_walk_progress(app: &AppHandle, job_id: &str, visited_dirs: usize, label:
     );
 }
 
+fn shallow_dir_stats(path: &Path) -> WalkStats {
+    let mut stats = WalkStats {
+        size: 0,
+        file_count: 0,
+        child_count: 0,
+    };
+
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return stats,
+    };
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            stats.child_count += 1;
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        stats.size += metadata.len();
+        stats.file_count += 1;
+    }
+
+    stats
+}
+
 fn walk_dir(
     path: &Path,
     depth: u16,
+    max_depth: u16,
     app: &AppHandle,
     job_id: &str,
     cancel_flag: &AtomicBool,
@@ -228,6 +361,10 @@ fn walk_dir(
     state.visited_dirs += 1;
     if state.visited_dirs % 250 == 0 {
         emit_walk_progress(app, job_id, state.visited_dirs, path.display().to_string());
+    }
+
+    if depth >= max_depth {
+        return shallow_dir_stats(path);
     }
 
     let mut stats = WalkStats {
@@ -262,6 +399,7 @@ fn walk_dir(
             let child_stats = walk_dir(
                 &child_path,
                 depth + 1,
+                max_depth,
                 app,
                 job_id,
                 cancel_flag,
@@ -360,6 +498,65 @@ fn walk_dir(
     stats
 }
 
+fn root_plan(path: PathBuf, max_depth: u16) -> RootScanPlan {
+    RootScanPlan { path, max_depth }
+}
+
+fn build_scan_roots(root: &Path) -> Vec<RootScanPlan> {
+    let mut plans = Vec::new();
+    let mut seen = HashSet::<String>::new();
+
+    let mut push_plan = |path: PathBuf, max_depth: u16| {
+        if !path.exists() || !path.is_dir() {
+            return;
+        }
+        let key = normalize_path(&path);
+        if seen.insert(key) {
+            plans.push(root_plan(path, max_depth));
+        }
+    };
+
+    push_plan(root.join("Users"), USERS_DEPTH);
+    push_plan(root.join("ProgramData"), PROGRAM_DATA_DEPTH);
+    push_plan(root.join("Windows"), WINDOWS_DEPTH);
+    push_plan(root.join("Program Files"), DEFAULT_SHALLOW_DEPTH);
+    push_plan(root.join("Program Files (x86)"), DEFAULT_SHALLOW_DEPTH);
+
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let child_path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+
+            let lower = normalize_path(&child_path);
+            if lower == normalize_path(&root.join("Users"))
+                || lower == normalize_path(&root.join("ProgramData"))
+                || lower == normalize_path(&root.join("Windows"))
+                || lower == normalize_path(&root.join("Program Files"))
+                || lower == normalize_path(&root.join("Program Files (x86)"))
+            {
+                continue;
+            }
+
+            let depth = if is_virtual_disk_path(&child_path) {
+                4
+            } else {
+                DEFAULT_SHALLOW_DEPTH
+            };
+            push_plan(child_path, depth);
+        }
+    }
+
+    plans
+}
+
 pub fn run_drive_analysis(
     app: &AppHandle,
     job_id: &str,
@@ -377,8 +574,72 @@ pub fn run_drive_analysis(
         .values()
         .map(|item| (normalize_path(Path::new(&item.target.path)), item.clone()))
         .collect::<HashMap<_, _>>();
+    let root_plans = build_scan_roots(&root);
+    let mut root_stats = WalkStats {
+        size: 0,
+        file_count: 0,
+        child_count: 0,
+    };
 
-    let root_stats = walk_dir(&root, 0, app, job_id, cancel_flag, &mut state, &known_targets, &root);
+    for plan in &root_plans {
+        if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+
+        let stats = walk_dir(
+            &plan.path,
+            0,
+            plan.max_depth,
+            app,
+            job_id,
+            cancel_flag,
+            &mut state,
+            &known_targets,
+            &root,
+        );
+
+        root_stats.size += stats.size;
+        root_stats.file_count += stats.file_count;
+        root_stats.child_count += 1;
+
+        let normalized = normalize_path(&plan.path);
+        let linked_target = known_targets.get(&normalized);
+        let (category, recommendation, risk_level, linked_target_id, is_known_target) =
+            classify_path(&plan.path, linked_target, &state.user_roots);
+        state.nodes.push(StorageNode {
+            id: path_id(&plan.path),
+            parent_id: Some(path_id(&root)),
+            path: plan.path.display().to_string(),
+            name: display_name(&plan.path, &root),
+            node_type: StorageNodeType::Directory,
+            size: stats.size,
+            file_count: stats.file_count,
+            child_count: stats.child_count,
+            depth: 1,
+            category: category.clone(),
+            recommendation: recommendation.clone(),
+            risk_level: risk_level.clone(),
+            linked_target_id: linked_target_id.clone(),
+            is_known_target,
+        });
+
+        if stats.size >= LARGE_FOLDER_THRESHOLD_BYTES || is_known_target {
+            push_largest(
+                &mut state.largest_dirs,
+                LargestItem {
+                    id: path_id(&plan.path),
+                    path: plan.path.display().to_string(),
+                    name: display_name(&plan.path, &root),
+                    node_type: StorageNodeType::Directory,
+                    size: stats.size,
+                    category,
+                    recommendation,
+                    risk_level,
+                    linked_target_id,
+                },
+            );
+        }
+    }
     if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
         return None;
     }
@@ -419,7 +680,10 @@ pub fn run_drive_analysis(
     Some(DriveAnalysisResult {
         summary: DriveAnalysisSummary {
             root_path: DRIVE_ROOT.to_string(),
-            engine_used: "hybrid_ntfs_fallback".to_string(),
+            engine_used: "adaptive_priority_scan".to_string(),
+            cache_state: "rebuilding".to_string(),
+            admin_acceleration: has_admin_acceleration(),
+            last_indexed_at: Some(unix_now()),
             total_bytes: root_stats.size,
             cleanable_bytes,
             advisory_bytes,

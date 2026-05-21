@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use crate::analysis::build_scan_assessment;
 use crate::catalog::targets;
-use crate::drive_analysis::run_drive_analysis;
+use crate::drive_analysis::{
+    load_cached_drive_analysis, run_drive_analysis, save_cached_drive_analysis, should_refresh_cache,
+    DriveAnalysisResult,
+};
 use crate::types::{
     AdvisoryFinding, AvailabilityStatus, RiskLevel, ScanJobEvent, ScanJobSummary, ScanMode,
     ScanPhase, ScannedTarget, SafeLevel, Target,
@@ -595,6 +598,46 @@ fn emit_storage_batches(app: &AppHandle, job_id: &str, nodes: &[crate::types::St
     }
 }
 
+fn emit_drive_analysis(app: &AppHandle, job_id: &str, drive_analysis: &DriveAnalysisResult) {
+    emit_storage_batches(app, job_id, &drive_analysis.nodes);
+    emit(
+        app,
+        ScanJobEvent {
+            event_type: "largest_batch".to_string(),
+            job_id: job_id.to_string(),
+            phase: Some(ScanPhase::Deep),
+            current: None,
+            total: None,
+            label: Some("Largest files dan folders siap.".to_string()),
+            item: None,
+            advisory: None,
+            storage_nodes: None,
+            largest_items: Some(drive_analysis.largest_items.clone()),
+            drive_summary: None,
+            summary: None,
+            message: None,
+        },
+    );
+    emit(
+        app,
+        ScanJobEvent {
+            event_type: "drive_summary".to_string(),
+            job_id: job_id.to_string(),
+            phase: Some(ScanPhase::Diagnostics),
+            current: None,
+            total: None,
+            label: Some("Ringkasan drive siap.".to_string()),
+            item: None,
+            advisory: None,
+            storage_nodes: None,
+            largest_items: None,
+            drive_summary: Some(drive_analysis.summary.clone()),
+            summary: None,
+            message: None,
+        },
+    );
+}
+
 #[tauri::command]
 pub fn start_scan(app: AppHandle, state: State<'_, ScanManager>, mode: ScanMode) -> Result<String, String> {
     let job_id = Uuid::new_v4().to_string();
@@ -610,6 +653,11 @@ pub fn start_scan(app: AppHandle, state: State<'_, ScanManager>, mode: ScanMode)
         let mut deep_candidates = Vec::<Target>::new();
 
         emit(&app_handle, ScanJobEvent { event_type: "started".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Quick), current: Some(0), total: Some(target_list.len()), label: Some("Scan dimulai".to_string()), item: None, advisory: None, storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
+
+        let mut cached_drive_analysis = load_cached_drive_analysis();
+        if let Some(cached) = &mut cached_drive_analysis {
+            emit_drive_analysis(&app_handle, &job_id_for_task, cached);
+        }
 
         for (index, target) in target_list.iter().cloned().enumerate() {
             if is_cancelled(&cancel_flag) {
@@ -646,40 +694,43 @@ pub fn start_scan(app: AppHandle, state: State<'_, ScanManager>, mode: ScanMode)
             emit(&app_handle, ScanJobEvent { event_type: "advisory".to_string(), job_id: job_id_for_task.clone(), phase: Some(ScanPhase::Diagnostics), current: None, total: None, label: None, item: None, advisory: Some(advisory), storage_nodes: None, largest_items: None, drive_summary: None, summary: None, message: None });
         }
 
-        if let Some(drive_analysis) =
-            run_drive_analysis(&app_handle, &job_id_for_task, &cancel_flag, &results, &advisories)
-        {
-            emit_storage_batches(&app_handle, &job_id_for_task, &drive_analysis.nodes);
-            emit(&app_handle, ScanJobEvent {
-                event_type: "largest_batch".to_string(),
-                job_id: job_id_for_task.clone(),
-                phase: Some(ScanPhase::Deep),
-                current: None,
-                total: None,
-                label: Some("Largest files dan folders siap.".to_string()),
-                item: None,
-                advisory: None,
-                storage_nodes: None,
-                largest_items: Some(drive_analysis.largest_items),
-                drive_summary: None,
-                summary: None,
-                message: None,
-            });
-            emit(&app_handle, ScanJobEvent {
-                event_type: "drive_summary".to_string(),
-                job_id: job_id_for_task.clone(),
-                phase: Some(ScanPhase::Diagnostics),
-                current: None,
-                total: None,
-                label: Some("Ringkasan drive siap.".to_string()),
-                item: None,
-                advisory: None,
-                storage_nodes: None,
-                largest_items: None,
-                drive_summary: Some(drive_analysis.summary),
-                summary: None,
-                message: None,
-            });
+        let should_refresh_drive = cached_drive_analysis
+            .as_ref()
+            .map(|cached| should_refresh_cache(&cached.summary))
+            .unwrap_or(true);
+
+        if should_refresh_drive {
+            if let Some(drive_analysis) =
+                run_drive_analysis(&app_handle, &job_id_for_task, &cancel_flag, &results, &advisories)
+            {
+                let _ = save_cached_drive_analysis(&drive_analysis);
+                emit_drive_analysis(&app_handle, &job_id_for_task, &drive_analysis);
+            }
+        } else if let Some(mut cached) = cached_drive_analysis.clone() {
+            cached.summary.cleanable_bytes = results
+                .values()
+                .filter(|item| item.recommendation == crate::types::Recommendation::CleanNow)
+                .map(|item| item.size)
+                .sum::<u64>();
+            cached.summary.advisory_bytes = advisories.iter().map(|item| item.size).sum();
+            emit(
+                &app_handle,
+                ScanJobEvent {
+                    event_type: "drive_summary".to_string(),
+                    job_id: job_id_for_task.clone(),
+                    phase: Some(ScanPhase::Diagnostics),
+                    current: None,
+                    total: None,
+                    label: Some("Ringkasan drive cache disinkronkan.".to_string()),
+                    item: None,
+                    advisory: None,
+                    storage_nodes: None,
+                    largest_items: None,
+                    drive_summary: Some(cached.summary),
+                    summary: None,
+                    message: None,
+                },
+            );
         }
 
         if is_cancelled(&cancel_flag) {

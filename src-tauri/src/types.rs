@@ -49,7 +49,7 @@ pub enum ScanPhase {
     Diagnostics,
 }
 
-#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageNodeType {
     Drive,
@@ -135,7 +135,7 @@ pub struct AdvisoryFinding {
     pub scan_note: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageNode {
     pub id: String,
@@ -154,7 +154,7 @@ pub struct StorageNode {
     pub is_known_target: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LargestItem {
     pub id: String,
@@ -168,11 +168,14 @@ pub struct LargestItem {
     pub linked_target_id: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriveAnalysisSummary {
     pub root_path: String,
     pub engine_used: String,
+    pub cache_state: String,
+    pub admin_acceleration: bool,
+    pub last_indexed_at: Option<u64>,
     pub total_bytes: u64,
     pub cleanable_bytes: u64,
     pub advisory_bytes: u64,
