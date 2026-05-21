@@ -17,8 +17,8 @@ use crate::types::{
 const DRIVE_ROOT: &str = "C:\\";
 const LARGE_FOLDER_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
 const LARGE_FILE_THRESHOLD_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_CAPTURED_NODES: usize = 1800;
-const MAX_LARGEST_ITEMS: usize = 160;
+const MAX_CAPTURED_NODES: usize = 3200;
+const MAX_LARGEST_ITEMS: usize = 260;
 const WIZTREE_EXPORT_TIMEOUT_SECONDS: u64 = 300;
 const WIZTREE_PORTABLE_URL: &str = "https://diskanalyzer.com/files/wiztree_4_31_portable.zip";
 const WIZTREE_PORTABLE_FOLDER: &str = "wiztree_4_31_portable";
@@ -727,6 +727,7 @@ fn build_result_from_entries(
             let (category, recommendation, risk_level, linked_target_id, _) =
                 classify_path(&entry.path, None, &user_roots);
             large_file_bytes += entry.size;
+            let file_id = id.clone();
             push_largest(
                 &mut largest_files,
                 LargestItem {
@@ -735,12 +736,31 @@ fn build_result_from_entries(
                     name: display_name(&entry.path),
                     node_type: StorageNodeType::File,
                     size: entry.size,
+                    category: category.clone(),
+                    recommendation: recommendation.clone(),
+                    risk_level: risk_level.clone(),
+                    linked_target_id: linked_target_id.clone(),
+                },
+            );
+
+            if nodes.len() < MAX_CAPTURED_NODES {
+                nodes.push(StorageNode {
+                    id: file_id,
+                    parent_id: parent_id(&entry.path),
+                    path: entry.path.clone(),
+                    name: display_name(&entry.path),
+                    node_type: StorageNodeType::File,
+                    size: entry.size,
+                    file_count: 1,
+                    child_count: 0,
+                    depth: depth_of(&entry.path),
                     category,
                     recommendation,
                     risk_level,
-                    linked_target_id,
-                },
-            );
+                    linked_target_id: None,
+                    is_known_target: false,
+                });
+            }
         }
     }
 
@@ -814,7 +834,46 @@ pub fn run_wiztree_scan(
     if cancel_flag.load(Ordering::Relaxed) {
         return Err("Scan WizTree dibatalkan.".to_string());
     }
+    let _ = app.emit(
+        "scan://event",
+        ScanJobEvent {
+            event_type: "progress".to_string(),
+            job_id: job_id.to_string(),
+            phase: Some(ScanPhase::Deep),
+            current: None,
+            total: None,
+            label: Some("Membaca CSV WizTree dan menyiapkan index detail...".to_string()),
+            item: None,
+            advisory: None,
+            storage_nodes: None,
+            largest_items: None,
+            drive_summary: None,
+            summary: None,
+            message: None,
+        },
+    );
     let entries = read_wiztree_entries(&export)?;
+    let _ = app.emit(
+        "scan://event",
+        ScanJobEvent {
+            event_type: "progress".to_string(),
+            job_id: job_id.to_string(),
+            phase: Some(ScanPhase::Deep),
+            current: Some(entries.len()),
+            total: None,
+            label: Some(format!(
+                "Menganalisis {} entri folder/file dari WizTree...",
+                entries.len()
+            )),
+            item: None,
+            advisory: None,
+            storage_nodes: None,
+            largest_items: None,
+            drive_summary: None,
+            summary: None,
+            message: None,
+        },
+    );
     Ok(build_result_from_entries(entries, known_results))
 }
 

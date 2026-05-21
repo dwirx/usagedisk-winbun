@@ -676,6 +676,28 @@ body {
   font-size: 12px;
   margin-top: 4px;
 }
+.treemap-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.treemap-breadcrumb button {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 11px;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 5px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.treemap-breadcrumb button:hover {
+  border-color: #38bdf8;
+}
 .treemap-grid {
   display: flex;
   flex-wrap: wrap;
@@ -695,6 +717,13 @@ body {
   min-width: 150px;
   padding: 14px;
   text-align: left;
+}
+.treemap-tile:hover {
+  border-color: #60a5fa;
+  transform: translateY(-1px);
+}
+.treemap-file {
+  border-style: dashed;
 }
 .treemap-low {
   background: linear-gradient(160deg, rgba(34, 197, 94, 0.18), #172033);
@@ -719,6 +748,79 @@ body {
   color: #94a3b8;
   font-size: 11px;
   line-height: 1.4;
+}
+.treemap-empty {
+  background: #111827;
+  border: 1px dashed #334155;
+  border-radius: 10px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 16px;
+  width: 100%;
+}
+.detail-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 10px 0 8px;
+}
+.detail-stats-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0;
+}
+.detail-stats-grid span {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 11px;
+  padding: 8px 9px;
+}
+.detail-stats-grid strong {
+  color: #e2e8f0;
+  display: block;
+  font-size: 15px;
+  margin-top: 2px;
+}
+.detail-mini-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 8px;
+}
+.detail-mini-row {
+  background: #111827;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  color: #cbd5e1;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+  text-align: left;
+}
+.detail-mini-row:hover {
+  border-color: #38bdf8;
+}
+.detail-mini-row span {
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-mini-row strong {
+  color: #93c5fd;
+  font-size: 11px;
+}
+.detail-mini-row em {
+  color: #94a3b8;
+  font-size: 10px;
+  font-style: normal;
 }
 .largest-table {
   display: flex;

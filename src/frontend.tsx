@@ -175,7 +175,7 @@ interface RowProps {
 type SortBy = "name" | "recommendation" | "size";
 type SafetyFilter = "all" | SafeLevel;
 type MinSizeFilter = 0 | 100 | 500 | 1024;
-type AnalyzerTab = "treemap" | "files" | "folders";
+type AnalyzerTab = "treemap" | "files" | "folders" | "review";
 
 interface ScanTimelineItem {
   id: string;
@@ -183,6 +183,17 @@ interface ScanTimelineItem {
   text: string;
   type: ScanJobEvent["type"];
   at: number;
+}
+
+interface DecisionSummary {
+  clean: number;
+  review: number;
+  manual: number;
+  unavailable: number;
+  low: number;
+  medium: number;
+  high: number;
+  bytes: number;
 }
 
 interface EsbuildMetafile {
@@ -336,6 +347,74 @@ function appendScanTimeline(
   ];
 
   return next.slice(-MAX_SCAN_TIMELINE);
+}
+
+function normalizeDrivePath(path: string): string {
+  let normalized = path.replaceAll("/", "\\").toLowerCase();
+  while (normalized.length > 3 && normalized.endsWith("\\")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function isInsidePath(path: string, root: string): boolean {
+  const normalizedPath = normalizeDrivePath(path);
+  const normalizedRoot = normalizeDrivePath(root);
+  return (
+    normalizedPath === normalizedRoot ||
+    normalizedPath.startsWith(`${normalizedRoot}\\`)
+  );
+}
+
+function summarizeDecisions(
+  items: Array<StorageNode | LargestItem>,
+): DecisionSummary {
+  const summary: DecisionSummary = {
+    bytes: 0,
+    clean: 0,
+    high: 0,
+    low: 0,
+    manual: 0,
+    medium: 0,
+    review: 0,
+    unavailable: 0,
+  };
+
+  for (const item of items) {
+    summary.bytes += item.size;
+    if (item.recommendation === "clean_now") {
+      summary.clean++;
+    } else if (item.recommendation === "review_first") {
+      summary.review++;
+    } else if (item.recommendation === "manual_only") {
+      summary.manual++;
+    } else {
+      summary.unavailable++;
+    }
+
+    if (item.riskLevel === "high") {
+      summary.high++;
+    } else if (item.riskLevel === "medium") {
+      summary.medium++;
+    } else {
+      summary.low++;
+    }
+  }
+
+  return summary;
+}
+
+function actionTextForRecommendation(recommendation: Recommendation): string {
+  if (recommendation === "clean_now") {
+    return "Aman masuk cleaner bila terhubung ke target aplikasi.";
+  }
+  if (recommendation === "review_first") {
+    return "Buka lokasi dan cek isi sebelum hapus manual.";
+  }
+  if (recommendation === "manual_only") {
+    return "Jangan hapus dari app; tangani lewat aplikasi/sistem terkait.";
+  }
+  return "Data belum cukup untuk mengambil keputusan.";
 }
 
 function normalizeMetafilePath(path: string): string {
@@ -1448,8 +1527,8 @@ export default function App() {
     () => advisories.reduce((sum, item) => sum + item.size, 0),
     [advisories],
   );
-  const driveNodes = useMemo(
-    () => storageNodes.filter((item) => item.nodeType !== "file"),
+  const analyzerNodes = useMemo(
+    () => storageNodes.filter((item) => item.size > 0),
     [storageNodes],
   );
   const largestFiles = useMemo(
@@ -1492,20 +1571,70 @@ export default function App() {
     () => storageNodes.find((item) => item.id === selectedNodeId) ?? null,
     [selectedNodeId, storageNodes],
   );
+  const selectedLinkedTarget = useMemo(
+    () =>
+      selectedNode?.linkedTargetId
+        ? (results.find((item) => item.id === selectedNode.linkedTargetId) ??
+          null)
+        : null,
+    [results, selectedNode],
+  );
+  const selectedChildren = useMemo(() => {
+    const parentId = selectedNode?.id ?? "c:\\";
+    return analyzerNodes
+      .filter((item) => item.parentId === parentId)
+      .sort((left, right) => right.size - left.size);
+  }, [analyzerNodes, selectedNode]);
+  const selectedDescendantLargest = useMemo(() => {
+    const rootPath = selectedNode?.path ?? driveSummary?.rootPath ?? "C:\\";
+    return largestItems
+      .filter((item) => isInsidePath(item.path, rootPath))
+      .sort((left, right) => right.size - left.size)
+      .slice(0, 10);
+  }, [driveSummary?.rootPath, largestItems, selectedNode?.path]);
+  const selectedDecisionSummary = useMemo(() => {
+    const sourceItems =
+      selectedChildren.length > 0
+        ? selectedChildren
+        : selectedDescendantLargest;
+    return summarizeDecisions(sourceItems);
+  }, [selectedChildren, selectedDescendantLargest]);
+  const nodePathById = useMemo(
+    () => new Map(storageNodes.map((item) => [item.id, item])),
+    [storageNodes],
+  );
+  const selectedBreadcrumb = useMemo(() => {
+    if (!selectedNode) {
+      return [];
+    }
+    const trail: StorageNode[] = [];
+    let cursor: StorageNode | undefined = selectedNode;
+    while (cursor) {
+      trail.unshift(cursor);
+      cursor = cursor.parentId ? nodePathById.get(cursor.parentId) : undefined;
+      if (trail.length > 8) {
+        break;
+      }
+    }
+    return trail;
+  }, [nodePathById, selectedNode]);
   const treemapNodes = useMemo(() => {
     const currentParentId = selectedNode?.id ?? "c:\\";
-    const directChildren = driveNodes
+    if (selectedNode?.nodeType === "file") {
+      return [];
+    }
+    const directChildren = analyzerNodes
       .filter((item) => item.parentId === currentParentId)
       .sort((left, right) => right.size - left.size);
     if (directChildren.length > 0) {
-      return directChildren.slice(0, 12);
+      return directChildren.slice(0, 18);
     }
-    return largestFolders.slice(0, 12).map((item) => ({
+    return selectedDescendantLargest.slice(0, 18).map((item) => ({
       id: item.id,
       parentId: undefined,
       path: item.path,
       name: item.name,
-      nodeType: "directory" as const,
+      nodeType: item.nodeType,
       size: item.size,
       fileCount: 0,
       childCount: 0,
@@ -1516,10 +1645,28 @@ export default function App() {
       linkedTargetId: item.linkedTargetId,
       isKnownTarget: item.linkedTargetId !== undefined,
     }));
-  }, [driveNodes, largestFolders, selectedNode]);
+  }, [analyzerNodes, selectedDescendantLargest, selectedNode]);
   const treemapTotal = useMemo(
     () => treemapNodes.reduce((sum, item) => sum + item.size, 0),
     [treemapNodes],
+  );
+  const reviewLargest = useMemo(
+    () =>
+      largestItems
+        .filter((item) => item.recommendation !== "clean_now")
+        .sort((left, right) => {
+          if (left.riskLevel !== right.riskLevel) {
+            const order: Record<RiskLevel, number> = {
+              high: 0,
+              low: 2,
+              medium: 1,
+            };
+            return order[left.riskLevel] - order[right.riskLevel];
+          }
+          return right.size - left.size;
+        })
+        .slice(0, 32),
+    [largestItems],
   );
   const filtered = useMemo(
     () =>
@@ -2061,6 +2208,7 @@ export default function App() {
                   ["treemap", "Treemap"],
                   ["files", "Largest Files"],
                   ["folders", "Largest Folders"],
+                  ["review", "Review Queue"],
                 ] as const
               ).map(([value, label]) => (
                 <button
@@ -2098,17 +2246,35 @@ export default function App() {
                       </button>
                     )}
                   </div>
+                  {selectedBreadcrumb.length > 0 && (
+                    <div className="treemap-breadcrumb">
+                      <button onClick={() => setSelectedNodeId(null)}>
+                        Root
+                      </button>
+                      {selectedBreadcrumb.map((item) => (
+                        <button
+                          key={item.id}
+                          onClick={() => setSelectedNodeId(item.id)}
+                        >
+                          {item.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="treemap-grid">
                     {treemapNodes.map((item) => (
                       <button
                         key={item.id}
-                        className={`treemap-tile treemap-${item.riskLevel}`}
+                        className={`treemap-tile treemap-${item.riskLevel} treemap-${item.nodeType}`}
                         style={{
                           flexBasis: tileBasis(item.size, treemapTotal),
                         }}
                         onClick={() => setSelectedNodeId(item.id)}
                       >
-                        <span className="treemap-name">{item.name}</span>
+                        <span className="treemap-name">
+                          {item.nodeType === "file" ? "File" : "Folder"} ·{" "}
+                          {item.name}
+                        </span>
                         <span className="treemap-size">
                           {formatBytes(item.size)}
                         </span>
@@ -2116,8 +2282,20 @@ export default function App() {
                           {item.category} ·{" "}
                           {RECOMMENDATION_MAP[item.recommendation].label}
                         </span>
+                        <span
+                          className={`risk-pill ${RISK_MAP[item.riskLevel].cls}`}
+                        >
+                          {RISK_MAP[item.riskLevel].label}
+                        </span>
                       </button>
                     ))}
+                    {treemapNodes.length === 0 && (
+                      <div className="treemap-empty">
+                        Tidak ada child folder/file besar yang tertangkap untuk
+                        node ini. Cek daftar terbesar di panel samping atau buka
+                        lokasi untuk inspeksi manual.
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2127,11 +2305,61 @@ export default function App() {
                     {selectedNode ? (
                       <>
                         <code className="detail-path">{selectedNode.path}</code>
+                        <div className="detail-badges">
+                          <span
+                            className={`badge ${RECOMMENDATION_MAP[selectedNode.recommendation].cls}`}
+                          >
+                            {
+                              RECOMMENDATION_MAP[selectedNode.recommendation]
+                                .label
+                            }
+                          </span>
+                          <span
+                            className={`risk-pill ${RISK_MAP[selectedNode.riskLevel].cls}`}
+                          >
+                            {RISK_MAP[selectedNode.riskLevel].label}
+                          </span>
+                        </div>
                         <p className="detail-txt">
                           {selectedNode.category} ·{" "}
                           {formatBytes(selectedNode.size)} ·{" "}
-                          {formatNumber(selectedNode.fileCount)} file
+                          {formatNumber(selectedNode.fileCount)} file ·{" "}
+                          {formatNumber(selectedNode.childCount)} folder
                         </p>
+                        <p className="detail-txt">
+                          {actionTextForRecommendation(
+                            selectedNode.recommendation,
+                          )}
+                          {selectedLinkedTarget
+                            ? ` Target cleaner: ${selectedLinkedTarget.name}.`
+                            : " Belum terhubung ke target cleaner otomatis."}
+                        </p>
+                        <div className="detail-stats-grid">
+                          <span>
+                            Clean
+                            <strong>
+                              {formatNumber(selectedDecisionSummary.clean)}
+                            </strong>
+                          </span>
+                          <span>
+                            Review
+                            <strong>
+                              {formatNumber(selectedDecisionSummary.review)}
+                            </strong>
+                          </span>
+                          <span>
+                            Manual
+                            <strong>
+                              {formatNumber(selectedDecisionSummary.manual)}
+                            </strong>
+                          </span>
+                          <span>
+                            Risiko tinggi
+                            <strong>
+                              {formatNumber(selectedDecisionSummary.high)}
+                            </strong>
+                          </span>
+                        </div>
                         <div className="detail-actions">
                           <button
                             className="btn-open-folder"
@@ -2163,11 +2391,35 @@ export default function App() {
                       </p>
                     )}
                   </div>
+                  <div className="detail-block">
+                    <div className="detail-lbl">Isi Terbesar di Area Ini</div>
+                    <div className="detail-mini-list">
+                      {(selectedChildren.length > 0
+                        ? selectedChildren.slice(0, 7)
+                        : selectedDescendantLargest.slice(0, 7)
+                      ).map((item) => (
+                        <button
+                          key={item.id}
+                          className="detail-mini-row"
+                          onClick={() => setSelectedNodeId(item.id)}
+                        >
+                          <span>
+                            {item.nodeType === "file" ? "File" : "Folder"} ·{" "}
+                            {item.name}
+                          </span>
+                          <strong>{formatBytes(item.size)}</strong>
+                          <em>
+                            {RECOMMENDATION_MAP[item.recommendation].label}
+                          </em>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
 
-            {analyzerTab !== "treemap" && (
+            {(analyzerTab === "files" || analyzerTab === "folders") && (
               <div className="largest-table">
                 <div className="largest-table-head">
                   <span>Nama</span>
@@ -2209,6 +2461,43 @@ export default function App() {
                     </div>
                   ),
                 )}
+              </div>
+            )}
+
+            {analyzerTab === "review" && (
+              <div className="largest-table">
+                <div className="largest-table-head">
+                  <span>Lokasi</span>
+                  <span>Keputusan</span>
+                  <span>Risiko</span>
+                  <span>Aksi</span>
+                </div>
+                {reviewLargest.map((item) => (
+                  <div key={item.id} className="largest-row">
+                    <div className="largest-meta">
+                      <strong>{item.name}</strong>
+                      <code>{item.path}</code>
+                    </div>
+                    <span
+                      className={`badge ${RECOMMENDATION_MAP[item.recommendation].cls}`}
+                    >
+                      {RECOMMENDATION_MAP[item.recommendation].label}
+                    </span>
+                    <span
+                      className={`risk-pill ${RISK_MAP[item.riskLevel].cls}`}
+                    >
+                      {RISK_MAP[item.riskLevel].label}
+                    </span>
+                    <div className="detail-actions">
+                      <button
+                        className="sort-btn"
+                        onClick={() => void openScannedPath(item.path)}
+                      >
+                        Buka
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </section>
